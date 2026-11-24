@@ -83,16 +83,21 @@ export interface RequestOptions {
 
 /** Mock REST API that runs in the browser. Every call returns {status, body} and is logged. */
 export async function request(ctx: ApiContext, method: Method, path: string, opts: RequestOptions = {}): Promise<ApiResponse> {
-  const res = await handle(ctx, method, path, opts);
-  if (!opts.silent || res.status >= 400) {
-    const role = roleForToken(opts.token) ?? 'none';
-    const extra = method === 'POST' && path.startsWith('/api/ingest') && res.status === 200 ? ` accepted=${(res.body as { accepted: number }).accepted}` : '';
-    ctx.log(res.status < 300 ? (method === 'POST' && path.includes('/approve') ? 'OK' : 'INFO') : res.status >= 500 ? 'ERROR' : 'WARN', `${method} ${normalizePath(path)} ${res.status}${extra} role=${role}`);
+  const role = roleForToken(opts.token) ?? 'none';
+  let logged = false;
+  // Ingest logs its 200 as soon as events are accepted (before AI triage finishes).
+  const onStaged = (o: { accepted: number }) => {
+    logged = true;
+    ctx.log('INFO', `${method} ${normalizePath(path)} 200 accepted=${o.accepted} role=${role}`);
+  };
+  const res = await handle(ctx, method, path, { ...opts, onStaged } as RequestOptions & { onStaged: typeof onStaged });
+  if (!logged && (!opts.silent || res.status >= 400)) {
+    ctx.log(res.status < 300 ? (method === 'POST' && path.includes('/approve') ? 'OK' : 'INFO') : res.status >= 500 ? 'ERROR' : 'WARN', `${method} ${normalizePath(path)} ${res.status} role=${role}`);
   }
   return res;
 }
 
-async function handle(ctx: ApiContext, method: Method, path: string, opts: RequestOptions): Promise<ApiResponse> {
+async function handle(ctx: ApiContext, method: Method, path: string, opts: RequestOptions & { onStaged?: (o: { accepted: number }) => void }): Promise<ApiResponse> {
   const m = matchRoute(method, path);
   if (!m) return { status: 404, body: { error: 'route not found', route: `${method} ${normalizePath(path)}`, suggestion: 'Check the path', routes: ROUTE_LIST } };
   const role = roleForToken(opts.token);
@@ -143,7 +148,7 @@ async function handle(ctx: ApiContext, method: Method, path: string, opts: Reque
       if (!Array.isArray(events)) return { status: 400, body: { error: 'bad request', problems: ['Body must be {"events": [ ... ]} or an array of events'] } };
       if (events.length > MAX_BATCH) return { status: 413, body: { error: 'payload too large', detail: `Batch has ${events.length} events; the limit is ${MAX_BATCH} per request. Split it into smaller batches.` } };
       try {
-        const out = await engine.ingest(events, { origin: opts.origin ?? 'ingest-api', scenarioId: opts.scenarioId, actor: actorFor(role) });
+        const out = await engine.ingest(events, { origin: opts.origin ?? 'ingest-api', scenarioId: opts.scenarioId, actor: actorFor(role), onStaged: opts.onStaged });
         return { status: 200, body: out };
       } catch (e) {
         const err = e as Error & { problems?: string[] };

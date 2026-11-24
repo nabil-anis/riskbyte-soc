@@ -23,6 +23,8 @@ export interface IngestOptions {
   origin: Origin;
   scenarioId?: string;
   actor: string;
+  /** called once events are stored and detection has run, before AI triage */
+  onStaged?: (outcome: IngestOutcome) => void;
 }
 
 export interface IngestOutcome {
@@ -162,6 +164,7 @@ export class Engine {
       };
     });
 
+    opts.onStaged?.(stage.outcome);
     // Triage outside the lock (Gemini can take seconds) so the UI never blocks.
     await Promise.all(stage.created.map((a) => this.runTriage(a.id)));
     return stage.outcome;

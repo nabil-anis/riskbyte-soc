@@ -1,0 +1,23 @@
+:root {
+  --bg: #F0EEE6;
+  --card: #FAF9F5;
+  --ink: #141413;
+  --coral: #D97757;
+  --coral-d: #B5532F;
+  --muted: #5E5D57;
+  --muted-dark: #C9C6BA;
+  --line: #D9D6CA;
+  --ok: #6B8F71;
+  --amber: #E8B65B;
+  --soft-red: #E57373;
+
+  --serif: 'Source Serif 4', Georgia, serif;
+  --sans: 'Inter', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --radius: 24px;
+  --radius-sm: 14px;
+  --shadow: 0 1px 0 rgba(20, 20, 19, .04);
+  --overlay: rgba(20, 20, 19, .45);
+  --ease: cubic-bezier(.2, .7, .2, 1);
+}
