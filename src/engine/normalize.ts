@@ -1,6 +1,6 @@
 import type { ClientId, EventSource, Origin, RiskEvent } from './types';
+import { getOrgs } from '../data/clients';
 
-export const CLIENT_IDS: ClientId[] = ['meezan', 'shu', 'contour'];
 export const SOURCES: EventSource[] = ['syslog', 'vpn', 'proxy', 'endpoint', 'web', 'gateway', 'git', 'payments'];
 export const MAX_BATCH = 1000;
 
@@ -20,7 +20,8 @@ export function validateBatch(events: unknown): ValidationResult {
       return;
     }
     const e = raw as Record<string, unknown>;
-    if (!CLIENT_IDS.includes(e.client as ClientId)) problems.push(`events[${i}].client must be one of ${CLIENT_IDS.join(', ')}`);
+    const ids = getOrgs().map((o) => o.id);
+    if (!ids.includes(e.client as ClientId)) problems.push(`events[${i}].client must be a registered organization id (${ids.join(', ')})`);
     if (!SOURCES.includes(e.source as EventSource)) problems.push(`events[${i}].source must be one of ${SOURCES.join(', ')}`);
     if (typeof e.action !== 'string' || !e.action) problems.push(`events[${i}].action is required (e.g. login_failed)`);
     if (e.message !== undefined && typeof e.message !== 'string') problems.push(`events[${i}].message must be a string`);

@@ -1,104 +1,129 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../store/store';
 import type { ClientId, RiskEvent } from '../engine/types';
-import { CLIENTS } from '../data/clients';
-import { MAX_BATCH } from '../engine/normalize';
-import { Button, ClientBadge, EmptyState, fmtTime } from '../components/ui';
-import { useEngineGate } from '../components/gates';
+import { MAX_BATCH, SOURCES } from '../engine/normalize';
+import { Button, ClientBadge, EmptyState, fmtTime, relTime, useTick } from '../components/ui';
+import { Console } from '../components/Console';
+import { Bars } from './Analyst';
 
-const now = () => new Date().toISOString();
-const PRESETS: { name: string; desc: string; body: () => unknown }[] = [
-  {
-    name: 'Syslog Authentication', desc: '6 failed SSH logins from one IP',
-    body: () => ({ events: Array.from({ length: 6 }, (_, i) => ({ client: 'contour', source: 'syslog', host: 'ci-build-01', user: 'jenkins_svc', ip: '1.2.3.4', action: 'login_failed', message: `sshd: Failed password for jenkins_svc (attempt ${i + 1})`, ts: new Date(Date.now() + i * 3000).toISOString() })) }),
-  },
-  {
-    name: 'Encoded PowerShell', desc: 'hidden -enc command on a laptop',
-    body: () => ({ events: [{ client: 'contour', source: 'endpoint', host: 'dev-ws-077', user: 'dev.sana', process: 'powershell.exe', action: 'process_start', message: 'powershell.exe -NoProfile -WindowStyle Hidden -enc SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQAKQ==', ts: now() }] }),
-  },
-  {
-    name: 'Phishing Link Click', desc: 'click on a spoofed bank page, then a proxy login',
-    body: () => ({ events: [
-      { client: 'meezan', source: 'proxy', host: 'gw-sms-01', user: 'customer.nadia', domain: 'meezan-fake-login.com', ip: '203.0.113.88', action: 'link_click', message: "Clicked link in SMS from 'MeezanBank'", ts: now() },
-      { client: 'meezan', source: 'web', host: 'ibanking-web-02', user: 'customer.nadia', ip: '203.0.113.88', action: 'login_success', message: 'Login from untrusted proxy shortly after link click', ts: new Date(Date.now() + 2000).toISOString() },
-    ] }),
-  },
-];
+export default function IngestWorkspace() {
+  const view = useStore((s) => s.view);
+  if (view === 'stream') return <Stream />;
+  if (view === 'send') return <Send />;
+  if (view === 'console') return <Console />;
+  return <Sources />;
+}
 
-export default function Ingest() {
-  const [sub, setSub] = useState<'stream' | 'dispatch'>('stream');
-  const engineOn = useStore((s) => s.engineOn);
-  const total = useStore((s) => s.data.counters.totalIngested);
-  const batches = useStore((s) => s.data.counters.batches);
+function Sources() {
+  useTick(5000);
+  const events = useStore((s) => s.data.events);
+  const counters = useStore((s) => s.data.counters);
+  const orgs = useStore((s) => s.data.orgs);
+  const now = Date.now();
+  const last5 = events.filter((e) => now - Date.parse(e.ts) <= 5 * 60_000).length;
+  const rows = useMemo(() => {
+    const m = new Map<string, { org: ClientId; source: string; n: number; last: string }>();
+    for (const e of events) {
+      const k = `${e.client}|${e.source}`;
+      const r = m.get(k) ?? { org: e.client, source: e.source, n: 0, last: e.ts };
+      r.n += 1;
+      if (e.ts > r.last) r.last = e.ts;
+      m.set(k, r);
+    }
+    return [...m.values()].sort((a, b) => b.last.localeCompare(a.last));
+  }, [events]);
+  const silent = orgs.filter((o) => !events.some((e) => e.client === o.id));
+
   return (
-    <div className="page">
-      <div className="page-head">
-        <div>
-          <div className="label">Telemetry</div>
-          <h1 style={{ marginTop: 10 }}>Telemetry Ingest 📡</h1>
-          <p>Where logs enter Riskbyte. Watch the raw stream, or hand-craft a batch and send it to the in-browser REST API yourself.</p>
-        </div>
-      </div>
-      <section className="grid g3" aria-label="Ingest health">
-        <div className="card metric">
-          <div className="label">Syslog UDP :5514</div>
-          <div className={`num sm ${engineOn ? 'ok' : ''}`}>{engineOn ? 'Listening' : 'Stopped'}</div>
-          <span className="small muted">Simulated: a website cannot open UDP ports.</span>
-        </div>
-        <div className="card metric">
-          <div className="label">REST · POST /api/ingest</div>
-          <div className={`num sm ${engineOn ? 'ok' : ''}`}>{engineOn ? 'Ready' : 'Offline'}</div>
-          <span className="small muted">In-browser API, up to {MAX_BATCH} events per batch.</span>
-        </div>
-        <div className="card metric">
-          <div className="label">Total processed logs</div>
-          <div className="num">{total}</div>
-          <span className="small muted">{batches} batch{batches === 1 ? '' : 'es'}</span>
-        </div>
+    <>
+      <section className="kpis">
+        <div className="kpi"><span className="label">Events · last 5 min</span><span className="v">{last5}</span><span className="s">{(last5 / 300).toFixed(2)} events/s</span></div>
+        <div className="kpi"><span className="label">Total processed</span><span className="v">{counters.totalIngested}</span><span className="s">{counters.batches} batches</span></div>
+        <div className="kpi"><span className="label">Active collectors</span><span className="v">{rows.filter((r) => now - Date.parse(r.last) <= 10 * 60_000).length}</span><span className="s">seen in last 10 min</span></div>
+        <div className="kpi"><span className="label">Pipeline latency</span><span className="v">{counters.batches ? (counters.totalMs / counters.batches).toFixed(1) : '0.0'}<span style={{ fontSize: '.5em' }}> ms</span></span><span className="s">normalize → detect → audit</span></div>
       </section>
-      <div className="seg" role="tablist" aria-label="Ingest views" style={{ alignSelf: 'flex-start' }}>
-        <button role="tab" type="button" aria-selected={sub === 'stream'} onClick={() => setSub('stream')}>Live Telemetry Stream</button>
-        <button role="tab" type="button" aria-selected={sub === 'dispatch'} onClick={() => setSub('dispatch')}>Direct Event Dispatcher</button>
+      <div className="cols-2e">
+        <section className="panel">
+          <div className="panel-head"><h3>Endpoints</h3></div>
+          <div className="table-wrap">
+            <table className="tbl">
+              <caption className="sr-only">Ingest endpoints</caption>
+              <thead><tr><th>Endpoint</th><th>Status</th><th>Notes</th></tr></thead>
+              <tbody>
+                <tr><td className="mono">POST /api/ingest</td><td><span className="pill st-executed">Ready</span></td><td className="small">JSON batches up to {MAX_BATCH} events, bearer token</td></tr>
+                <tr><td className="mono">udp://0.0.0.0:5514</td><td><span className="pill st-executed">Listening</span></td><td className="small">Syslog collector (simulated; browsers cannot open UDP sockets)</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+        <section className="panel">
+          <div className="panel-head"><h3>Volume by source type</h3></div>
+          <div className="panel-body"><Bars rows={SOURCES.map((s) => ({ label: s, n: events.filter((e) => e.source === s).length }))} /></div>
+        </section>
       </div>
-      {sub === 'stream' ? <Stream /> : <Dispatcher />}
-    </div>
+      <section className="panel">
+        <div className="panel-head"><h3>Collectors</h3><div className="right"><span className="pill chip">{rows.length} reporting</span></div></div>
+        {rows.length === 0 && silent.length === orgs.length ? <EmptyState icon="⇪" title="No telemetry received yet">Collectors appear as soon as the first event from an organization arrives.</EmptyState> : (
+          <div className="table-wrap">
+            <table className="tbl">
+              <caption className="sr-only">Collectors by organization and source</caption>
+              <thead><tr><th>Organization</th><th>Source</th><th>Events</th><th>Last event</th><th>Status</th></tr></thead>
+              <tbody>
+                {rows.map((r) => {
+                  const active = now - Date.parse(r.last) <= 10 * 60_000;
+                  return (
+                    <tr key={r.org + r.source}>
+                      <td><ClientBadge client={r.org} /></td><td className="mono">{r.source}</td><td>{r.n}</td><td className="nowrap">{relTime(r.last)}</td>
+                      <td><span className={`pill ${active ? 'st-executed' : 'st-dismissed'}`}>{active ? 'Active' : 'Idle'}</span></td>
+                    </tr>
+                  );
+                })}
+                {silent.map((o) => (
+                  <tr key={o.id}><td><ClientBadge client={o.id} /></td><td className="muted">—</td><td>0</td><td className="muted">never</td><td><span className="pill st-triaged">Awaiting data</span></td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </>
   );
 }
 
 function Stream() {
   const events = useStore((s) => s.data.events);
-  const [paused, setPaused] = useState<RiskEvent[] | null>(null);
-  const [client, setClient] = useState<ClientId | 'all'>('all');
-  const source = paused ?? events;
-  const list = useMemo(() => [...source].reverse().filter((e) => client === 'all' || e.client === client).slice(0, 300), [source, client]);
+  const orgs = useStore((s) => s.data.orgs);
+  const [frozen, setFrozen] = useState<RiskEvent[] | null>(null);
+  const [org, setOrg] = useState<ClientId | 'all'>('all');
+  const [q, setQ] = useState('');
+  const source = frozen ?? events;
+  const list = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return [...source].reverse().filter((e) => (org === 'all' || e.client === org) &&
+      (!needle || [e.id, e.host, e.user, e.ip, e.domain, e.process, e.action, e.message].some((v) => v?.toLowerCase().includes(needle)))).slice(0, 300);
+  }, [source, org, q]);
   return (
-    <section className="card pad-sm stack" aria-label="Live telemetry stream">
-      <div className="row between">
-        <div className="row">
-          <Button variant={paused ? 'primary' : 'secondary'} size="sm" onClick={() => setPaused(paused ? null : [...events])}>{paused ? '▶ Resume' : '⏸ Pause'}</Button>
-          <select className="select" style={{ width: 220, padding: '7px 36px 7px 14px' }} value={client} onChange={(e) => setClient(e.target.value as ClientId | 'all')} aria-label="Filter by client">
-            <option value="all">All clients</option>
-            {CLIENTS.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-        </div>
-        <span className="small muted">{paused ? `Paused · ${events.length - paused.length} new event(s) waiting` : 'Live · newest first · showing up to 300'}</span>
+    <section className="panel">
+      <div className="panel-head">
+        <Button variant={frozen ? 'primary' : 'secondary'} size="sm" onClick={() => setFrozen(frozen ? null : [...events])}>{frozen ? '▶ Resume' : '⏸ Pause'}</Button>
+        <select className="select" style={{ width: 220, padding: '7px 36px 7px 12px' }} value={org} onChange={(e) => setOrg(e.target.value)} aria-label="Organization">
+          <option value="all">All organizations</option>
+          {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+        </select>
+        <input className="input" style={{ width: 240, padding: '7px 12px' }} placeholder="Search host, user, ip, message…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search events" />
+        <div className="right"><span className="small muted">{frozen ? `Paused · ${events.length - frozen.length} new` : 'Live · newest first · up to 300'}</span></div>
       </div>
-      {list.length === 0 ? <EmptyState icon="📭" title="No telemetry yet">Turn the Engine on and run an attack, or send a batch from the dispatcher.</EmptyState> : (
+      {list.length === 0 ? <EmptyState icon="≋" title="No events">Events appear here the moment they are accepted.</EmptyState> : (
         <div className="table-wrap tall">
           <table className="tbl">
-            <caption className="sr-only">Raw events</caption>
-            <thead><tr><th>ID</th><th>Timestamp</th><th>Client</th><th>Source</th><th>Host</th><th>User</th><th>Process</th><th>Action</th><th>IP</th><th>Message / Command</th></tr></thead>
+            <caption className="sr-only">Normalized events</caption>
+            <thead><tr><th>ID</th><th>Time</th><th>Organization</th><th>Source</th><th>Host</th><th>User</th><th>Process</th><th>Action</th><th>IP</th><th>Message</th></tr></thead>
             <tbody>{list.map((e) => (
               <tr key={e.id}>
-                <td className="mono nowrap">{e.id}{e.origin !== 'ingest-api' && e.origin !== 'dispatcher' && <div><span className="pill chip" style={{ fontSize: 10, padding: '1px 8px', marginTop: 4 }} title={`origin: ${e.origin}`}>Simulated</span></div>}</td>
-                <td className="mono nowrap">{fmtTime(e.ts)}</td>
-                <td><ClientBadge client={e.client} /></td>
-                <td>{e.source}</td>
-                <td className="mono">{e.host ?? '-'}</td>
-                <td className="mono">{e.user ?? '-'}</td>
-                <td className="mono">{e.process ?? '-'}</td>
-                <td className="mono nowrap">{e.action}</td>
-                <td className="mono nowrap">{e.ip ?? '-'}</td>
+                <td className="mono nowrap">{e.id}{e.origin === 'demo' && <div><span className="pill chip" style={{ fontSize: 10, padding: '1px 8px', marginTop: 4 }}>simulated</span></div>}</td>
+                <td className="mono nowrap">{fmtTime(e.ts)}</td><td><ClientBadge client={e.client} /></td><td>{e.source}</td>
+                <td className="mono">{e.host ?? '-'}</td><td className="mono">{e.user ?? '-'}</td><td className="mono">{e.process ?? '-'}</td>
+                <td className="mono nowrap">{e.action}</td><td className="mono nowrap">{e.ip ?? '-'}</td>
                 <td className="cmd">{e.message}{e.domain ? ` [${e.domain}]` : ''}</td>
               </tr>
             ))}</tbody>
@@ -109,72 +134,57 @@ function Stream() {
   );
 }
 
+const sample = (org: string) => JSON.stringify({
+  events: [{ client: org, source: 'syslog', host: 'srv-app-01', user: 'svc.web', ip: '10.0.4.12', action: 'login_success', message: 'sshd: Accepted publickey for svc.web', ts: new Date().toISOString() }],
+}, null, 2);
+
 function jsonError(text: string, err: Error): string {
-  const m = /position (\d+)/.exec(err.message);
   const lc = /line (\d+) column (\d+)/.exec(err.message);
-  if (lc) return `Invalid JSON at line ${lc[1]}, column ${lc[2]}: ${err.message.split(' in JSON')[0]}`;
+  if (lc) return `Invalid JSON at line ${lc[1]}, column ${lc[2]}`;
+  const m = /position (\d+)/.exec(err.message);
   if (m) {
     const pos = Number(m[1]);
     const before = text.slice(0, pos);
-    const line = before.split('\n').length;
-    const col = pos - before.lastIndexOf('\n');
-    return `Invalid JSON at line ${line}, column ${col}: ${err.message.split(' in JSON')[0]}`;
+    return `Invalid JSON at line ${before.split('\n').length}, column ${pos - before.lastIndexOf('\n')}`;
   }
   return `Invalid JSON: ${err.message}`;
 }
 
-function Dispatcher() {
+function Send() {
   const api = useStore((s) => s.api);
-  const gate = useEngineGate();
-  const [text, setText] = useState(() => JSON.stringify(PRESETS[0].body(), null, 2));
+  const orgs = useStore((s) => s.data.orgs);
+  const [text, setText] = useState(() => sample(orgs[0]?.id ?? 'meezan'));
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ status: number; body: unknown } | null>(null);
   const [busy, setBusy] = useState(false);
-
   const send = async () => {
     let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch (e) {
-      setError(jsonError(text, e as Error));
-      return;
-    }
+    try { parsed = JSON.parse(text); } catch (e) { setError(jsonError(text, e as Error)); return; }
     setError(null);
-    const count = Array.isArray(parsed) ? parsed.length : Array.isArray((parsed as { events?: unknown[] })?.events) ? (parsed as { events: unknown[] }).events.length : 0;
-    if (count > MAX_BATCH) setError(`This batch has ${count} events; the API limit is ${MAX_BATCH}. Expect a 413.`);
     setBusy(true);
-    const res = await api('POST', '/api/ingest', { body: parsed, origin: 'dispatcher' });
+    const res = await api('POST', '/api/ingest', { body: parsed, origin: 'ingest-api' });
     setBusy(false);
     setResult(res);
   };
-
   return (
-    <div className="grid g2">
-      <section className="card stack" aria-label="Event dispatcher">
-        <div className="card-title" style={{ marginBottom: 0 }}><h3>Compose a batch</h3></div>
-        <div className="stack" style={{ gap: 8 }}>
-          <span className="label">Presets</span>
+    <div className="cols-2e">
+      <section className="panel">
+        <div className="panel-head"><h3>Request</h3><div className="right"><code className="small">POST /api/ingest · Bearer dev-ingest</code></div></div>
+        <div className="panel-body stack">
           <div className="row">
-            {PRESETS.map((p) => (
-              <Button key={p.name} variant="secondary" size="sm" onClick={() => { setText(JSON.stringify(p.body(), null, 2)); setError(null); setResult(null); }}>{p.name}</Button>
-            ))}
+            <span className="small muted">Template for:</span>
+            {orgs.map((o) => <Button key={o.id} size="sm" variant="secondary" onClick={() => { setText(sample(o.id)); setResult(null); setError(null); }}>{o.name}</Button>)}
           </div>
-          <span className="small muted">{PRESETS.map((p) => `${p.name}: ${p.desc}`).join(' · ')}</span>
-        </div>
-        <label className="field">
-          <span>Request body · <code>POST /api/ingest</code></span>
-          <textarea className="textarea" value={text} onChange={(e) => setText(e.target.value)} spellCheck={false} aria-invalid={!!error} aria-describedby="json-err" />
-        </label>
-        {error && <div id="json-err" className="banner bad small" role="alert">{error}</div>}
-        <div className="row">
-          <Button onClick={send} disabledReason={gate} busy={busy}>Send batch</Button>
-          <span className="small muted">Required per event: client (meezan | shu | contour), source, action. Optional: ts, host, user, ip, domain, process, message, meta.</span>
+          <textarea className="textarea" value={text} onChange={(e) => setText(e.target.value)} spellCheck={false} aria-label="Request body" aria-invalid={!!error} />
+          {error && <div className="banner bad small" role="alert">{error}</div>}
+          <div className="row"><Button onClick={send} busy={busy}>Send</Button><span className="small muted">Fields: client (organization id), source ({SOURCES.join(', ')}), action, and optional ts, host, user, ip, domain, process, message, meta.</span></div>
         </div>
       </section>
-      <section className="card stack" aria-label="API response" aria-live="polite">
-        <div className="card-title" style={{ marginBottom: 0 }}><h3>Mock API response</h3>{result && <span className={`pill ${result.status < 300 ? 'st-executed' : 'sev-CRITICAL'}`}>{result.status}</span>}</div>
-        {result ? <pre className="yaml" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(result.body, null, 2)}</pre>
-          : <EmptyState icon="📨" title="Nothing sent yet">Pick a preset and press Send batch. The response from the in-browser API appears here, and the terminal logs every step.</EmptyState>}
+      <section className="panel" aria-live="polite">
+        <div className="panel-head"><h3>Response</h3>{result && <div className="right"><span className={`pill ${result.status < 300 ? 'st-executed' : 'sev-CRITICAL'}`}>{result.status}</span></div>}</div>
+        <div className="panel-body">
+          {result ? <pre className="yaml" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{JSON.stringify(result.body, null, 2)}</pre> : <p className="muted">The API response appears here.</p>}
+        </div>
       </section>
     </div>
   );

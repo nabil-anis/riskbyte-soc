@@ -6,13 +6,29 @@
 
 Riskbyte is a mini Security Operations Center (SOC) that runs entirely in the browser. It ingests security logs, detects threats with 10 Sigma-style rules, cross-references threat intelligence, triages each alert with AI (Google Gemini, with a local heuristic fallback), proposes a containment action that **waits for human approval**, and records every action in a **SHA-256 hash-chained audit ledger** that exposes tampering. Alerts on the same host or user are grouped into Cases.
 
-## What you will see
+## Product structure
 
-- **Login**: pick Security Analyst, Administrator or Telemetry Ingest.
-- **Top bar**: Engine toggle (boots the in-browser engine with live logs), terminal, demo guide, settings, role switcher, sign out, and a "Dynamic Island" status pill.
-- **Demo (Attack Lab)**: choose Meezan Bank, Salim Habib University or Contour Software, run one of 4 attacks each, and watch the 7-step flow (attack → normalize → detect → intel → AI triage → approval gate → audit block), each step with "What this means" and "Why this matters". Plus an Attack Playground and Auto-attack.
-- **Alerts**: explorer + inspector with AI triage, intel hits, the approval gate and correlated telemetry.
-- **Cases**, **Admin Overview** (metrics, 10 rules with YAML, threat intel, tamper/repair/reset), **Audit Trail**, **License & Health** (with the Real vs Simulated table) and **Telemetry Ingest** (live stream + JSON dispatcher).
+The landing page has four cards. Each tier is its own console with its own navigation:
+
+| Workspace | Who | Pages |
+|---|---|---|
+| **Security Analyst** (Tier 1) | SOC analyst, the human in the loop | Overview (approval queue, KPIs, agent activity) · Alert queue (agent timeline, AI assessment, evidence, approve/dismiss) · Incidents · Agent activity log |
+| **Administrator** (Tier 2) | Platform owner | Overview · Organizations (onboard/offboard) · AI agent & policy (Gemini key, model, per-action approval vs auto-execute, confidence threshold) · Detection rules (Sigma YAML) · Threat intel · Audit ledger (verify, rebuild, export) · System (license, storage, API matrix, data reset) |
+| **Telemetry Ingestion** (Tier 3) | Log pipeline operator | Sources (endpoints, collectors per org, throughput) · Live stream · Send events (REST API) · Pipeline console |
+| **Demo** | Attack simulator | Pick one of 11 attacks → choose the organization → launch. Optional continuous mode. Then open the analyst or telemetry console to see what the agent did. |
+
+### What the AI agent does for every detection
+
+1. **Detect**: a Sigma-style rule matches the incoming telemetry.
+2. **Correlate**: pulls related events on the same host/user (and attaches events that arrive later).
+3. **Enrich**: checks IPs and domains against threat intel.
+4. **Incident**: opens or links an incident for that entity.
+5. **Triage**: asks Gemini (redacted evidence) or the local heuristic model for a verdict, confidence and investigation steps.
+6. **Recommend**: proposes a containment action.
+7. **Gate**: by default waits for analyst approval. If the administrator set that action to *Auto* and the verdict is MALICIOUS above the threshold, the agent executes it itself (as `ai:riskbyte-agent`).
+8. **Record**: every step that changes state goes into the SHA-256 hash-chained audit ledger.
+
+Each alert shows this as a timeline ("What the agent did"), and the analyst overview shows the live agent activity feed.
 
 ## Run locally (Windows PowerShell)
 
@@ -26,19 +42,19 @@ npm run dev
 
 Open the URL Vite prints (usually http://localhost:5173).
 
-Other scripts: `npm test` (Vitest, 48 tests), `npm run build` (type-check + production build into `dist/`), `npm run preview` (serve the build).
+Other scripts: `npm test` (Vitest, 51 tests), `npm run build` (type-check + production build into `dist/`), `npm run preview` (serve the build).
 
 ## Deploy to Vercel
 
 1. Go to vercel.com → **Add New… → Project** → **Import** the `riskbyte` GitHub repository.
 2. Framework preset: **Vite** (detected from `vercel.json`). Build command `npm run build`, output directory `dist`.
 3. **No environment variables are required.**
-4. Click **Deploy** and open the generated link. It lands on the login screen. Refreshing any tab (`#alerts`, `#demo`, …) works because tabs live in the URL hash and `vercel.json` rewrites every path to `index.html`.
+4. Click **Deploy** and open the generated link. It lands on the workspace picker. Refreshing any page (`#analyst/alerts`, `#admin/orgs`, …) works because the location lives in the URL hash and `vercel.json` rewrites every path to `index.html`.
 
 ## Adding your Gemini API key
 
 1. Get a key from Google AI Studio.
-2. In Riskbyte, click the **gear (Settings)**, paste the key, keep the model `gemini-2.5-flash` (or try another name if you get a 404), click **Test Connection**, then **Save settings**.
+2. Open **Administrator → AI agent & policy**, paste the key, keep the model `gemini-2.5-flash` (or try another name if you get a 404), click **Test Connection**, then **Save**.
 3. New alerts are now triaged by Gemini. The triage card shows `gemini · <model>`; if the call fails it shows `heuristic (Gemini unavailable: <reason>)`.
 
 The key is stored only in your browser's localStorage. It is never logged, printed in the terminal, or committed. An optional `VITE_GEMINI_API_KEY` build variable is supported as a default, but **`VITE_` variables are public inside the built JavaScript bundle**, so prefer the Settings field.
@@ -81,11 +97,12 @@ Before anything is sent to Gemini, IPs, usernames, hostnames and the organisatio
 - **Dedupe**: the same rule for the same client + entity within 60 s does not open a second alert. Running the same scenario twice quickly links the new events to the existing alert, and the Demo panel says so.
 - **Correlated telemetry / intel** for an alert = the triggering events plus events within 10 minutes on the same host or user (same IP for brute-force rules). Events that arrive later for an open alert are attached too, so the ransomware DNS lookup to `ransomware-c2.net` lands on the shadow-copy alert.
 - **Cases** close automatically once every alert in them is approved or dismissed.
-- **Contour phishing in the Playground**: the 7-indicator list has no Contour-specific phishing domain, so the playground reuses `shu-admissions-phish.com`.
+- **Phishing simulation for orgs without a spoofed domain** (Contour and any org you add) reuses `shu-admissions-phish.com`, since the indicator list has only two phishing domains.
+- **Engine is always on**: like a real SOC platform, the pipeline and agent run continuously; there is no on/off switch.
+- **Organizations** are stored with the platform data. Offboarding keeps history but rejects new telemetry for that org.
+- **Audit log tampering** is one of the simulator's attacks (an insider editing a stored record); admins detect and rebuild it from the Audit ledger page.
 - **Processing time** shown in the UI and `stats` is the measured detection pipeline per batch (normalize → detect → intel → case → audit), not including AI triage. AI latency is shown separately on each triage card.
 - **Actors** in the audit ledger are `analyst:soc.analyst`, `admin:soc.admin`, `ingest:ingest.agent`, plus `system:detector` and `ai:<provider>` for automated steps.
-- **Tamper demo** edits the second-newest block (so the break is visible but not at the very end). It needs at least 2 blocks.
-- **Engine "off" on reload**: the engine always starts off after a full page load unless "Remember engine state" is on in Settings.
 - The heuristic uses the fixed scenario confidences only when the alert came from that scenario's run **and** fired that scenario's rule.
 
 ## Tech stack

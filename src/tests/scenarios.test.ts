@@ -54,3 +54,40 @@ describe('scenarios run end to end through the API', () => {
     expect((r.body as { deduped: unknown[] }).deduped).toHaveLength(1);
   });
 });
+
+describe('agent behaviour', () => {
+  it('records a timeline and waits for approval by default', async () => {
+    const { engine, ctx } = makeEngine();
+    await engine.init();
+    await request(ctx, 'POST', '/api/ingest', { token: 'dev-ingest', body: { events: scenarioEvents(SCENARIOS[0]) } });
+    const a = engine.data.alerts[0];
+    expect(a.timeline.map((s) => s.kind)).toEqual(['detect', 'correlate', 'enrich', 'case', 'triage', 'propose', 'await']);
+    expect(a.status).toBe('triaged');
+  });
+  it('auto-executes when policy allows and confidence is high enough', async () => {
+    const { Engine } = await import('../engine/engineState');
+    const { request: req } = await import('../engine/api');
+    const engine = new Engine({
+      log: () => {}, onChange: () => {},
+      triageConfig: () => ({ apiKey: '', model: 'x' }),
+      policy: () => ({ modes: { isolate_host: 'approve', block_ip: 'approve', disable_user: 'approve', reset_password: 'auto' }, minConfidence: 90 }),
+    });
+    await engine.init();
+    const ctx = { engine, isEngineOn: () => true, provider: () => ({ provider: 'heuristic' as const, model: 'h' }), log: () => {} };
+    await req(ctx, 'POST', '/api/ingest', { token: 'dev-ingest', body: { events: scenarioEvents(SCENARIOS[0]) }, scenarioId: SCENARIOS[0].id });
+    const a = engine.data.alerts[0];
+    expect(a.status).toBe('executed');
+    expect(a.outcome?.auto).toBe(true);
+    expect(engine.data.audit.some((b) => b.kind === 'containment.auto_executed' && b.actor === 'ai:riskbyte-agent')).toBe(true);
+    expect((await (await import('../engine/audit')).verifyChain(engine.data.audit)).intact).toBe(true);
+  });
+  it('onboards a new organization that can then receive telemetry', async () => {
+    const { engine, ctx } = makeEngine();
+    await engine.init();
+    const org = await engine.addOrg({ name: 'Acme Health', sector: 'Healthcare' }, 'admin:soc.admin');
+    expect(org.id).toBe('acme-health');
+    const r = await request(ctx, 'POST', '/api/ingest', { token: 'dev-ingest', body: { events: [{ client: 'acme-health', source: 'vpn', user: 'dr.x', ip: '198.51.100.99', action: 'login_success', meta: { geo: 'Foreign' }, message: 'vpn' }] } });
+    expect(r.status).toBe(200);
+    expect(engine.data.alerts[0].client).toBe('acme-health');
+  });
+});

@@ -155,9 +155,8 @@ export function ConfirmModal({ open, title, body, confirmLabel, onConfirm, onClo
 
 export function Toasts() {
   const toasts = useStore((s) => s.toasts);
-  const termOpen = useStore((s) => s.terminalOpen);
   return (
-    <div className={`toasts ${termOpen ? 'lifted' : ''}`} aria-live="polite" role="status">
+    <div className="toasts" aria-live="polite" role="status">
       {toasts.map((t) => (
         <div key={t.id} className={`toast ${t.tone ?? ''}`}><span className="tdot" aria-hidden />{t.text}</div>
       ))}

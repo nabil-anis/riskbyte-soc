@@ -1,60 +1,9 @@
-import type { Action, ClientId } from '../engine/types';
+import type { Action } from '../engine/types';
 
 export const DISCLAIMER =
   'All scenarios and organizational profiles are educational simulations using reserved documentation IP ranges and invented accounts. Not affiliated with Meezan Bank, Salim Habib University, or Contour Software. No real data is used.';
 
 export const CREDIT = 'Muhammad Nabil • F23CSC009 • Essentials of Cybersecurity';
-
-export const STEP_TITLES = [
-  'Attack Launched',
-  'Event Received & Normalized',
-  'Detection Rule Triggered',
-  'Threat Intelligence Cross-Reference',
-  'Autonomous AI Triage & Reasoning',
-  'Proposed Containment & Approval Gate',
-  'Cryptographic Audit Trail Record',
-];
-
-export const whatThisMeans = (step: number, v: { attackShort: string; n: number }) =>
-  [
-    `The attacker ${v.attackShort}.`,
-    `Riskbyte accepted ${v.n} event(s) and converted them into one common format.`,
-    'A detection rule matched the pattern. Rules are shared Sigma-style signatures.',
-    'The address or domain is on our known-bad list, which raises confidence.',
-    'The AI read the evidence and gave a verdict with a confidence score and reasons.',
-    'Riskbyte proposes a response, but nothing happens until a human approves.',
-    'The approval was written to a tamper-evident log where each entry depends on the one before it.',
-  ][step];
-
-export const WHY_IT_MATTERS: Record<ClientId, string[]> = {
-  meezan: [
-    'Customers trust SMS from their bank, so one convincing message can empty an account.',
-    'Banking systems produce huge volumes of events; one clean format makes the signal findable.',
-    "Fast detection protects customers before money moves and protects the bank's trust.",
-    'Known-bad indicators turn a guess into evidence, which matters in a regulated bank.',
-    'Analysts cannot read every log; AI gives a fast, explained second opinion.',
-    'A wrong automated block could lock out real customers, so a human decides.',
-    'Banks must prove who did what and when; a tamper-evident record supports compliance reviews.',
-  ],
-  shu: [
-    'Faculty and students hold grades, exam papers and applicant records; one clicked link can expose them.',
-    'Labs, portals and the LMS all log differently; one format makes them comparable.',
-    'Early detection keeps admissions and exams running in critical weeks.',
-    'Matching known-bad sites quickly confirms a suspicion without delaying staff.',
-    'A small IT team cannot watch everything; AI triage saves their time.',
-    'Isolating the wrong lab PC could interrupt a class or exam, so someone approves first.',
-    'A trustworthy record helps the university answer to management and regulators.',
-  ],
-  contour: [
-    'Developer accounts and laptops are the way into source code and customer releases.',
-    'Build servers, VPNs and laptops all produce events; one format gives one view.',
-    'Early detection stops an intruder before they reach code or the CI/CD pipeline.',
-    'Known-bad addresses show whether attacker infrastructure is involved.',
-    'Engineers should not triage alerts all day; AI explains so they can act fast.',
-    'Cutting off the wrong build server could delay a customer release, so a human approves.',
-    'A tamper-evident trail supports customer security audits and contract requirements.',
-  ],
-};
 
 export const ACTION_LABEL: Record<Action, string> = {
   isolate_host: 'Isolate host',
@@ -93,21 +42,4 @@ export const LIMITATIONS = [
   'Accuracy is checked by unit tests (functional), not by a measured detection rate on real data.',
   'Rule rb-002 flags the encoded-command pattern; it does not decode the payload.',
   'Authentication is simulated (dev tokens); production would need real authentication.',
-];
-
-export const CHECKLIST = [
-  'Open the Vercel link.',
-  'Click Security Analyst Dashboard.',
-  'Turn the Engine on and let the terminal boot.',
-  'Open the Demo tab.',
-  'Show the Client Selector (Meezan Bank, Salim Habib University, Contour Software).',
-  'Select Meezan Bank and point out the profile card (what they do, risks).',
-  'Click Run Attack on Fake Bank Login Phishing.',
-  'Walk through the 7 steps, reading the "What this means" and "Why this matters" lines.',
-  'Click Approve & Execute Action at step 6; point out step 7 and the SHA-256 block hash.',
-  'Point out the What Happened? box.',
-  'Open Audit Trail and show Hash Chain: Intact (SHA-256).',
-  '(Wow moment) In Admin Overview click Simulate tampering, show the badge turn red, then Repair.',
-  'Show the 10 Sigma rules and the platform metrics in Admin Overview.',
-  'Close with the credit: Muhammad Nabil • F23CSC009 • Essentials of Cybersecurity.',
 ];

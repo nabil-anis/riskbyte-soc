@@ -6,7 +6,7 @@ const alert: Alert = {
   id: 'A-0001', ruleId: 'rb-006', client: 'meezan', severity: 'HIGH', title: 'Phishing link click then external login', ts: '2026-11-25T10:00:00Z',
   host: 'ibanking-web-02', user: 'customer.tariq', ip: '203.0.113.88', status: 'new', caseId: 'C-0001', eventIds: ['e-0001'],
   intelHits: [{ value: '203.0.113.88', type: 'ip', category: 'phishing proxy', confidence: 0.91, note: '' }],
-  proposed: { action: 'reset_password', target: 'customer.tariq' }, scenarioId: 'meezan_phish',
+  proposed: { action: 'reset_password', target: 'customer.tariq' }, scenarioId: 'meezan_phish', timeline: [],
 };
 const events: RiskEvent[] = [{ id: 'e-0001', ts: alert.ts, client: 'meezan', source: 'web', host: 'ibanking-web-02', user: 'customer.tariq', ip: '203.0.113.88', action: 'login_success', message: 'Login from untrusted proxy', origin: 'demo' }];
 

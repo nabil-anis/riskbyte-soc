@@ -5,7 +5,7 @@ import { SCENARIOS } from '../data/scenarios';
 
 const alert = (o: Partial<Alert> = {}): Alert => ({
   id: 'A-0042', ruleId: 'rb-001', client: 'meezan', severity: 'MEDIUM', title: 'Repeated failed logins (brute force)', ts: '2026-11-25T10:00:00Z',
-  ip: '1.2.3.4', status: 'new', caseId: 'C-0001', eventIds: [], intelHits: [], proposed: { action: 'block_ip', target: '1.2.3.4' }, ...o,
+  ip: '1.2.3.4', status: 'new', caseId: 'C-0001', eventIds: [], intelHits: [], proposed: { action: 'block_ip', target: '1.2.3.4' }, timeline: [], ...o,
 });
 
 describe('heuristic triage', () => {

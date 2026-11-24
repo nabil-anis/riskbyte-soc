@@ -4,58 +4,20 @@
 
 Before you start: check the AI engine. Open Settings (gear). If a Gemini key is saved, the triage card will say `gemini · gemini-2.5-flash`. If not, it says `heuristic`. Say which one is running before the demo, and never imply Gemini produced a heuristic verdict.
 
-Tip: as Administrator, press **Reset Demo Data** on the Demo page right before presenting so the ledger starts clean.
+Before presenting: Administrator → System → *Clear telemetry, alerts & ledger* so the ledger starts clean.
 
-## Checklist
+## Run of show
 
-- [ ] Open the Vercel link.
-- [ ] Click **Security Analyst Dashboard**.
-- [ ] Turn the **Engine** on and let the terminal boot.
-- [ ] Open the **Demo** tab.
-- [ ] Show the **Client Selector** (Meezan Bank, Salim Habib University, Contour Software).
-- [ ] Select **Meezan Bank** and point out the profile card (what they do, risks).
-- [ ] Click **Run Attack** on **Fake Bank Login Phishing**.
-- [ ] Walk through the 7 steps, reading the "What this means" and "Why this matters" lines.
-- [ ] Click **Approve & Execute Action** at step 6; point out step 7 and the SHA-256 block hash.
-- [ ] Point out the **What Happened?** box.
-- [ ] Open **Audit Trail** and show `Hash Chain: Intact (SHA-256)`.
-- [ ] (Wow moment) In **Admin Overview** click **Simulate tampering**, show the badge turn red, then **Repair**. (Switch to Administrator from the role badge first; the analyst cannot tamper.)
-- [ ] Show the 10 Sigma rules and the platform metrics in **Admin Overview**.
+- [ ] Open the Vercel link. Point out the four cards: three SOC tiers and the Demo simulator.
+- [ ] **Demo** → *Credential phishing* → choose **Meezan Bank** → *Launch attack*.
+- [ ] Click **Security analyst console**. Show the approval queue: the agent's recommendation is waiting.
+- [ ] Click **Review**. Walk through *What the agent did* (detect → correlate → enrich → incident → AI triage → recommendation → waiting for approval) and the *AI assessment*.
+- [ ] Click **Approve & execute**. Point out the decision box and the audit block hash.
+- [ ] **Switch workspace → Telemetry Ingestion**: show the collectors and the raw events that arrived.
+- [ ] **Administrator → AI agent & policy**: set *reset_password* to **Auto**. Back in Demo, launch phishing against **Salim Habib University**. In the analyst console the agent now auto-executed it (*Handled by agent*).
+- [ ] **Administrator → Organizations**: onboard a new organization; it immediately shows up as a target in the Demo.
+- [ ] **Demo → Audit log tampering**: every console shows *Ledger TAMPERED*; **Administrator → Audit ledger → Rebuild chain**.
 - [ ] Close with the credit: *Muhammad Nabil • F23CSC009 • Essentials of Cybersecurity*.
-
-## Spoken script (one paragraph per step)
-
-**Open & sign in.** "This is Riskbyte, a mini Security Operations Center. Think of it as a security guard for a company's computers. I'll sign in as a security analyst, the person who decides what to do about threats."
-
-**Engine on.** "I turn the engine on. The terminal at the bottom is the engine's live log: it loads ten detection rules, seven known-bad indicators, verifies the audit ledger, and tells us which AI is doing triage. Everything runs live in the browser."
-
-**Demo tab & client selector.** "Riskbyte serves three simulated organisations: a bank, a university and a software company. Each has different assets and risks. I'll pick Meezan Bank: mobile and internet banking, SMS, and instant Raast payments, so phishing and account takeover are the big risks."
-
-**Run Attack.** "I launch a simulated phishing attack: a fake bank SMS leads a customer to a look-alike login page, and the attacker then logs in with the stolen password."
-
-**Step 1 · Attack launched.** "Here is what the attacker did. All addresses are reserved documentation IPs, so nothing real is touched."
-
-**Step 2 · Event received & normalized.** "Riskbyte received two log events through its ingest API and converted them into one common format. You can see the measured processing time in milliseconds."
-
-**Step 3 · Detection rule.** "Rule rb-006 fired: a click on a flagged phishing link followed by a login from an untrusted address within ten minutes. It's a Sigma-style rule mapped to MITRE ATT&CK T1566.002."
-
-**Step 4 · Threat intel.** "Both the domain and the proxy IP are on our known-bad list. That turns a suspicion into evidence."
-
-**Step 5 · AI triage.** "The AI reads the evidence and returns a verdict, a confidence score and investigation steps. Before anything goes to Gemini, names, hosts and IPs are replaced by tokens, so confidential data never leaves. The badge shows exactly which engine produced this."
-
-**Step 6 · Approval gate.** "Riskbyte proposes resetting the customer's password, but it does nothing on its own. A wrong automatic action could lock out real customers, so a human approves. I click Approve & Execute. It's a dry run: no real system changes."
-
-**Step 7 · Audit record.** "My approval is now block number N in a hash-chained ledger. Each block's SHA-256 hash includes the previous block's hash, so editing any old entry breaks the chain."
-
-**What Happened?** "Here's the plain-English summary of the whole incident, which a manager could read without any jargon."
-
-**Audit Trail.** "Every action is listed here with its hash, and the badge says Hash Chain: Intact."
-
-**Tamper demo.** "Now let me play an intruder who edits the log to hide their tracks. I switch to Administrator and click Simulate tampering. Instantly the chain breaks at that block and every badge turns red. Repair rebuilds the chain and records that a repair happened. This is tamper-evident, not tamper-proof."
-
-**Rules & metrics.** "These are the ten detection rules; clicking one shows its Sigma YAML. Up top: total telemetry, open incidents, which AI is active, ledger status and average processing time."
-
-**Close.** "The attacker is simulated, but the detection, AI triage, approval gate and audit chain are real code running live. Muhammad Nabil, F23CSC009, Essentials of Cybersecurity. Thank you."
 
 ## Real vs Simulated
 

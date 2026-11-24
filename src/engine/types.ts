@@ -1,7 +1,8 @@
 export type Role = 'ingest' | 'analyst' | 'admin';
 export type Severity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 export type Verdict = 'MALICIOUS' | 'SUSPICIOUS' | 'BENIGN';
-export type ClientId = 'meezan' | 'shu' | 'contour';
+/** Organization id (slug). Built-in: meezan, shu, contour; admins can add more. */
+export type ClientId = string;
 export type Action = 'isolate_host' | 'block_ip' | 'disable_user' | 'reset_password';
 export type EventSource = 'syslog' | 'vpn' | 'proxy' | 'endpoint' | 'web' | 'gateway' | 'git' | 'payments';
 export type Origin = 'demo' | 'playground' | 'dispatcher' | 'ingest-api';
@@ -80,7 +81,32 @@ export interface Alert {
   triage?: Triage;
   proposed: { action: Action; target: string };
   scenarioId?: string;
-  outcome?: { by: string; at: string; blockIndex: number; hash: string; kind: 'approved' | 'dismissed' };
+  outcome?: { by: string; at: string; blockIndex: number; hash: string; kind: 'approved' | 'dismissed'; auto?: boolean };
+  /** What the AI agent did for this alert, in order. */
+  timeline: AgentStep[];
+}
+
+export type AgentStepKind = 'detect' | 'correlate' | 'enrich' | 'case' | 'triage' | 'propose' | 'await' | 'execute' | 'dismiss' | 'auto';
+export interface AgentStep {
+  ts: string;
+  kind: AgentStepKind;
+  text: string;
+}
+
+export interface Org {
+  id: ClientId;
+  name: string;
+  sector: string;
+  description?: string;
+  createdAt: string;
+  builtIn?: boolean;
+}
+
+export type ApprovalMode = 'approve' | 'auto';
+export interface AgentPolicy {
+  modes: Record<Action, ApprovalMode>;
+  /** auto-execute only when verdict is MALICIOUS and confidence >= this */
+  minConfidence: number;
 }
 
 export interface Case {
@@ -122,7 +148,8 @@ export interface LogLine {
 }
 
 export interface EngineData {
-  version: 1;
+  version: 2;
+  orgs: Org[];
   events: RiskEvent[];
   alerts: Alert[];
   cases: Case[];

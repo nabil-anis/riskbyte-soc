@@ -1,125 +1,134 @@
-import { useEffect, useRef, type KeyboardEvent } from 'react';
-import { useStore, TABS, canView, DEFAULT_TAB, ROLE_LABEL, type Tab } from './store/store';
-import { TopBar } from './components/TopBar';
-import { TerminalDrawer } from './components/TerminalDrawer';
-import { SettingsModal } from './components/SettingsModal';
-import { DemoGuideDrawer } from './components/DemoGuideDrawer';
-import { Toasts, Button } from './components/ui';
-import { Footer } from './components/Footer';
-import Login from './pages/Login';
-import Alerts from './pages/Alerts';
-import Cases from './pages/Cases';
-import Demo from './pages/Demo';
-import Admin from './pages/Admin';
-import Audit from './pages/Audit';
-import License from './pages/License';
-import Ingest from './pages/Ingest';
-import type { Role } from './engine/types';
+import { useEffect } from 'react';
+import { useStore, VIEWS, WORKSPACE_LABEL, WORKSPACE_ROLE, effectiveKey, syncFromHash, type Workspace } from './store/store';
+import { TOKENS } from './engine/auth';
+import { Toasts } from './components/ui';
+import Landing from './pages/Landing';
+import AnalystWorkspace from './pages/Analyst';
+import AdminWorkspace from './pages/Admin';
+import IngestWorkspace from './pages/Ingest';
+import DemoWorkspace from './pages/Demo';
+import { CREDIT } from './data/copy';
 
-const PAGES: Record<Tab, () => JSX.Element> = { alerts: Alerts, cases: Cases, demo: Demo, admin: Admin, audit: Audit, license: License, ingest: Ingest };
+const PAGES: Record<Workspace, () => JSX.Element> = { analyst: AnalystWorkspace, admin: AdminWorkspace, ingest: IngestWorkspace, demo: DemoWorkspace };
 
-function Tabs() {
-  const tab = useStore((s) => s.tab);
-  const role = useStore((s) => s.session!.role);
-  const setTab = useStore((s) => s.setTab);
+const SUBTITLE: Record<string, string> = {
+  'analyst/overview': 'What needs your attention right now',
+  'analyst/alerts': 'Every detection, the agent’s assessment, and the action waiting for you',
+  'analyst/incidents': 'Alerts on the same host or user, grouped into one incident',
+  'analyst/activity': 'Everything the AI agent has done, newest first',
+  'admin/overview': 'Platform health across every organization',
+  'admin/orgs': 'Organizations whose telemetry Riskbyte monitors',
+  'admin/agent': 'AI provider and how much autonomy the agent has',
+  'admin/rules': 'Sigma-style detection content',
+  'admin/intel': 'Known-bad indicators used for enrichment',
+  'admin/ledger': 'SHA-256 hash-chained record of every action',
+  'admin/system': 'License, storage, API and data management',
+  'ingest/overview': 'Collectors, endpoints and throughput per organization',
+  'ingest/stream': 'Raw normalized events as they arrive',
+  'ingest/send': 'Post a batch to the ingest API',
+  'ingest/console': 'Live pipeline log',
+  'demo/attacks': 'Launch simulated attacks against a monitored organization',
+};
+
+function Sidebar({ ws }: { ws: Workspace }) {
+  const view = useStore((s) => s.view);
+  const go = useStore((s) => s.go);
+  const leave = useStore((s) => s.leave);
   const pending = useStore((s) => s.data.alerts.filter((a) => a.status === 'triaged' || a.status === 'new').length);
-  const refs = useRef<(HTMLButtonElement | null)[]>([]);
-  useEffect(() => {
-    refs.current[TABS.findIndex((t) => t.id === tab)]?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-  }, [tab]);
-  const onKey = (e: KeyboardEvent, i: number) => {
-    let n = -1;
-    if (e.key === 'ArrowRight') n = (i + 1) % TABS.length;
-    if (e.key === 'ArrowLeft') n = (i - 1 + TABS.length) % TABS.length;
-    if (e.key === 'Home') n = 0;
-    if (e.key === 'End') n = TABS.length - 1;
-    if (n >= 0) { e.preventDefault(); refs.current[n]?.focus(); setTab(TABS[n].id); }
-  };
+  const openInc = useStore((s) => s.data.cases.filter((c) => c.status === 'open').length);
+  const counts: Record<string, number> = ws === 'analyst' ? { alerts: pending, incidents: openInc } : {};
   return (
-    <nav aria-label="Main">
-      <div className="tabs-bar" role="tablist" aria-label="Riskbyte sections">
-        {TABS.map((t, i) => (
-          <button
-            key={t.id}
-            ref={(el) => (refs.current[i] = el)}
-            role="tab"
-            id={`tab-${t.id}`}
-            aria-selected={tab === t.id}
-            aria-controls="main-panel"
-            tabIndex={tab === t.id ? 0 : -1}
-            className="tab"
-            onClick={() => setTab(t.id)}
-            onKeyDown={(e) => onKey(e, i)}
-          >
-            {i + 1}. {t.label}
-            {!canView(role, t.id) && <span className="lock" aria-label="(not available for your role)">🔒</span>}
-            {t.id === 'alerts' && pending > 0 && canView(role, 'alerts') && <span className="count" aria-label={`${pending} awaiting decision`}>{pending}</span>}
+    <aside className="sidebar" aria-label="Workspace navigation">
+      <button type="button" className="side-brand" onClick={leave} aria-label="Riskbyte home"><span className="dot" aria-hidden />Riskbyte</button>
+      <div className="side-ws">
+        <div className="label">Workspace</div>
+        <b>{WORKSPACE_LABEL[ws]}</b>
+        <span className="small">{ws === 'demo' ? 'Simulation only' : `Signed in · ${WORKSPACE_ROLE[ws]}`}</span>
+      </div>
+      <nav className="side-nav">
+        {VIEWS[ws].map((v) => (
+          <button key={v.id} type="button" aria-current={view === v.id ? 'page' : undefined} onClick={() => go(v.id)}>
+            <span className="ic" aria-hidden>{v.icon}</span>{v.label}
+            {counts[v.id] ? <span className="count">{counts[v.id]}</span> : null}
           </button>
         ))}
+      </nav>
+      <div className="side-foot">
+        <span className="tok">token: {TOKENS[WORKSPACE_ROLE[ws]]}</span>
+        <button type="button" className="switch-btn" onClick={leave}>⇄ Switch workspace</button>
+        <span className="credit">{CREDIT}</span>
       </div>
-    </nav>
+    </aside>
   );
 }
 
-function NoAccess({ tab }: { tab: Tab }) {
-  const switchRole = useStore((s) => s.switchRole);
-  const role = useStore((s) => s.session!.role);
-  const target: Role = 'analyst';
+function StatusRow() {
+  const audit = useStore((s) => s.audit);
+  const settings = useStore((s) => s.settings);
+  const gemini = !!effectiveKey(settings);
   return (
-    <div className="page">
-      <div className="card" style={{ maxWidth: 640, margin: '40px auto', textAlign: 'center' }}>
-        <div style={{ fontSize: 40 }} aria-hidden>🔒</div>
-        <h2 style={{ marginTop: 12 }}>Your role cannot view this page</h2>
-        <p className="muted" style={{ marginTop: 12 }}>
-          You are signed in as <b>{ROLE_LABEL[role]}</b>, which can only send telemetry and view License &amp; Health. {TABS.find((t) => t.id === tab)?.label} needs an analyst or administrator.
-        </p>
-        <div className="row" style={{ justifyContent: 'center', marginTop: 20 }}>
-          <Button onClick={() => switchRole(target)}>Switch to Security Analyst</Button>
-          <Button variant="secondary" onClick={() => switchRole('admin')}>Switch to Administrator</Button>
-        </div>
-      </div>
+    <div className="status-row">
+      <span className="stat-pill live"><span className="d" />Agent online</span>
+      <span className={`stat-pill ${gemini ? '' : 'warn'}`}><span className="d" />AI: {gemini ? `Gemini · ${settings.model}` : 'Heuristic'}</span>
+      <span className={`stat-pill ${audit.intact ? '' : 'bad'}`}><span className="d" />Ledger {audit.intact ? 'intact' : 'TAMPERED'}</span>
+    </div>
+  );
+}
+
+function IntegrityBanner({ ws }: { ws: Workspace }) {
+  const audit = useStore((s) => s.audit);
+  const go = useStore((s) => s.go);
+  const enter = useStore((s) => s.enter);
+  const view = useStore((s) => s.view);
+  if (audit.intact) return null;
+  return (
+    <div className="integrity-banner" role="alert">
+      <span className="pill sev-CRITICAL">Integrity</span>
+      <span className="grow">Audit ledger verification failed at block <b>#{audit.brokenAt}</b>. A stored record no longer matches its SHA-256 hash.</span>
+      {ws === 'admin' && view === 'ledger' ? null : ws === 'admin'
+        ? <button type="button" className="btn btn-dark btn-sm" onClick={() => go('ledger')}>Open audit ledger</button>
+        : <button type="button" className="btn btn-secondary btn-sm" onClick={() => enter('admin', 'ledger')}>Investigate as administrator</button>}
     </div>
   );
 }
 
 export default function App() {
-  const session = useStore((s) => s.session);
-  const tab = useStore((s) => s.tab);
-  const setTab = useStore((s) => s.setTab);
+  const ws = useStore((s) => s.workspace);
+  const view = useStore((s) => s.view);
 
-  // Mirror tab <-> URL hash so refresh and shared links work on any static host.
   useEffect(() => {
-    const fromHash = () => {
-      const h = window.location.hash.replace('#', '') as Tab;
-      if (TABS.some((t) => t.id === h)) setTab(h);
-    };
-    fromHash();
-    window.addEventListener('hashchange', fromHash);
-    return () => window.removeEventListener('hashchange', fromHash);
-  }, [setTab]);
+    const onHash = () => syncFromHash();
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
   useEffect(() => {
-    if (session && window.location.hash !== `#${tab}`) window.history.replaceState(null, '', `#${tab}`);
-  }, [tab, session]);
-  useEffect(() => {
-    if (session && !TABS.some((t) => `#${t.id}` === window.location.hash)) setTab(DEFAULT_TAB[session.role]);
-  }, [session]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { window.scrollTo({ top: 0 }); }, [tab]);
+    const target = ws ? `#${ws}/${view}` : '';
+    if (window.location.hash !== target) window.history.replaceState(null, '', target || window.location.pathname);
+    window.scrollTo({ top: 0 });
+  }, [ws, view]);
 
-  if (!session) return (<><Login /><Toasts /></>);
-
-  const Page = PAGES[tab];
+  if (!ws) return (<><Landing /><Toasts /></>);
+  const Page = PAGES[ws];
+  const title = VIEWS[ws].find((v) => v.id === view)?.label ?? '';
   return (
-    <div className="shell">
-      <a href="#main-panel" className="sr-only">Skip to content</a>
-      <TopBar />
-      <Tabs />
-      <main id="main-panel" role="tabpanel" aria-labelledby={`tab-${tab}`} className="grow" tabIndex={-1}>
-        {canView(session.role, tab) ? <Page key={tab} /> : <NoAccess tab={tab} />}
-      </main>
-      <Footer />
-      <TerminalDrawer />
-      <SettingsModal />
-      <DemoGuideDrawer />
+    <div className="app">
+      <Sidebar ws={ws} />
+      <div className="main">
+        <header className="main-head">
+          <div className="main-head-inner">
+            <div>
+              <div className="crumbs">{WORKSPACE_LABEL[ws]}</div>
+              <h1>{title}</h1>
+              <p className="small muted" style={{ marginTop: 4 }}>{SUBTITLE[`${ws}/${view}`]}</p>
+            </div>
+            <StatusRow />
+          </div>
+        </header>
+        <IntegrityBanner ws={ws} />
+        <main id="main-panel" className="content" key={`${ws}/${view}`}>
+          <Page />
+        </main>
+      </div>
       <Toasts />
     </div>
   );

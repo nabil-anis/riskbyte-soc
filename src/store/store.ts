@@ -1,104 +1,103 @@
 import { create, type UseBoundStore, type StoreApi } from 'zustand';
-import type { AuditStatus, EngineData, LogLevel, LogLine, Role, ClientId } from '../engine/types';
+import type { AgentPolicy, AuditStatus, ClientId, EngineData, LogLevel, LogLine, Role } from '../engine/types';
 import { Engine, emptyData } from '../engine/engineState';
 import { request, type ApiResponse, type Method, type RequestOptions } from '../engine/api';
 import { TOKENS, actorFor } from '../engine/auth';
 import { RULES } from '../data/rules';
 import { INDICATORS } from '../data/indicators';
-import { SCENARIOS, scenarioById, scenarioEvents } from '../data/scenarios';
-import { generate, type AttackType } from '../engine/generators';
-import {
-  ENV_KEY, KEYS, clearAll, loadChecklist, loadData, loadEngineOn, loadSession, loadSettings, write, type Settings,
-} from './persist';
+import { getOrgs } from '../data/clients';
+import { ATTACKS, attackById, defaultTarget, generate, type AttackType } from '../engine/generators';
+import { ENV_KEY, KEYS, clearAll, loadData, loadSettings, loadWorkspace, write, type Settings, type Workspace } from './persist';
 
-export type Tab = 'alerts' | 'cases' | 'demo' | 'admin' | 'audit' | 'license' | 'ingest';
-export const TABS: { id: Tab; label: string }[] = [
-  { id: 'alerts', label: 'Alerts' },
-  { id: 'cases', label: 'Cases' },
-  { id: 'demo', label: 'Demo' },
-  { id: 'admin', label: 'Admin Overview' },
-  { id: 'audit', label: 'Audit Trail' },
-  { id: 'license', label: 'License & Health' },
-  { id: 'ingest', label: 'Telemetry Ingest' },
-];
-export const DEFAULT_TAB: Record<Role, Tab> = { analyst: 'alerts', admin: 'admin', ingest: 'ingest' };
-export const ROLE_LABEL: Record<Role, string> = { analyst: 'Security Analyst', admin: 'Administrator', ingest: 'Telemetry Ingest' };
+export type { Workspace };
 
-export function canView(role: Role, tab: Tab) {
-  return role === 'ingest' ? tab === 'ingest' || tab === 'license' : true;
-}
+export const VIEWS: Record<Workspace, { id: string; label: string; icon: string }[]> = {
+  analyst: [
+    { id: 'overview', label: 'Overview', icon: '◎' },
+    { id: 'alerts', label: 'Alert queue', icon: '⚑' },
+    { id: 'incidents', label: 'Incidents', icon: '▣' },
+    { id: 'activity', label: 'Agent activity', icon: '≋' },
+  ],
+  admin: [
+    { id: 'overview', label: 'Overview', icon: '◎' },
+    { id: 'orgs', label: 'Organizations', icon: '▦' },
+    { id: 'agent', label: 'AI agent & policy', icon: '✦' },
+    { id: 'rules', label: 'Detection rules', icon: '☰' },
+    { id: 'intel', label: 'Threat intel', icon: '⊘' },
+    { id: 'ledger', label: 'Audit ledger', icon: '⛓' },
+    { id: 'system', label: 'System', icon: '⚙' },
+  ],
+  ingest: [
+    { id: 'overview', label: 'Sources', icon: '◎' },
+    { id: 'stream', label: 'Live stream', icon: '≋' },
+    { id: 'send', label: 'Send events', icon: '⇪' },
+    { id: 'console', label: 'Pipeline console', icon: '>_' },
+  ],
+  demo: [{ id: 'attacks', label: 'Attack simulator', icon: '⚡' }],
+};
+
+export const WORKSPACE_LABEL: Record<Workspace, string> = {
+  analyst: 'Security Analyst',
+  admin: 'Administrator',
+  ingest: 'Telemetry Ingestion',
+  demo: 'Attack Simulator',
+};
+
+/** API role each workspace authenticates as. The simulator sends telemetry like any log shipper. */
+export const WORKSPACE_ROLE: Record<Workspace, Role> = { analyst: 'analyst', admin: 'admin', ingest: 'ingest', demo: 'ingest' };
 
 export interface Toast { id: number; text: string; tone?: 'info' | 'error' | 'ok' }
 
-export interface DemoRun {
-  runId: number;
-  scenarioId: string;
+export interface Launch {
+  id: number;
+  attack: AttackType;
+  org: ClientId;
+  target: string;
   startedAt: number;
-  eventCountBefore: number;
-  alertCountBefore: number;
-  status: 'running' | 'done' | 'error';
-  accepted?: number;
-  processingMs?: number;
-  alertId?: string;
-  dedupedFrom?: string;
-  error?: string;
-}
-
-export interface Playground {
-  running: boolean;
   sent: number;
   total: number;
-  label: string;
+  status: 'running' | 'delivered' | 'cancelled' | 'failed';
+  firstEventNum: number;
+  detail?: string;
 }
 
 interface State {
-  session: { role: Role } | null;
-  tab: Tab;
-  engineOn: boolean;
-  booting: boolean;
+  workspace: Workspace | null;
+  view: string;
   data: EngineData;
   audit: AuditStatus;
   logs: LogLine[];
-  terminalOpen: boolean;
-  paused: boolean;
   settings: Settings;
   usingEnvKey: boolean;
-  island: { kind: 'switched' | 'critical'; until: number; text?: string } | null;
   toasts: Toast[];
-  settingsOpen: boolean;
-  guideOpen: boolean;
-  checklist: boolean[];
   selectedAlertId: string | null;
   selectedCaseId: string | null;
-  demoRun: DemoRun | null;
-  demoClient: ClientId;
-  playground: Playground;
-  autoAttack: { on: boolean; nextAt: number | null };
+  launches: Launch[];
+  continuous: { on: boolean; nextAt: number | null };
+  bootedAt: number;
 }
 
 interface Actions {
-  login: (role: Role) => void;
-  switchRole: (role: Role) => void;
-  signOut: () => void;
-  setTab: (tab: Tab) => void;
-  setEngine: (on: boolean) => Promise<void>;
+  enter: (w: Workspace, view?: string) => void;
+  leave: () => void;
+  go: (view: string, extra?: Partial<State>) => void;
   log: (level: LogLevel, text: string) => void;
   clearLogs: () => void;
   toast: (text: string, tone?: Toast['tone']) => void;
   dismissToast: (id: number) => void;
-  api: (method: Method, path: string, opts?: Omit<RequestOptions, 'token'> & { quiet403?: boolean }) => Promise<ApiResponse>;
+  api: (method: Method, path: string, opts?: Omit<RequestOptions, 'token'>) => Promise<ApiResponse>;
   updateSettings: (p: Partial<Settings>) => void;
-  runScenario: (id: string) => Promise<void>;
-  launchPlayground: (type: AttackType, client: ClientId, target: string, intensity: number, label: string) => Promise<void>;
-  cancelPlayground: () => void;
-  setAutoAttack: (on: boolean) => void;
+  setPolicy: (p: Partial<AgentPolicy>) => void;
+  launchAttack: (type: AttackType, org: ClientId, target: string, intensity: number) => Promise<void>;
+  cancelLaunch: () => void;
+  setContinuous: (on: boolean) => void;
   decide: (alertId: string, kind: 'approve' | 'dismiss') => Promise<void>;
   verifyAudit: () => Promise<AuditStatus>;
-  tamper: () => Promise<void>;
   repair: () => Promise<void>;
-  resetDemo: () => Promise<void>;
+  resetData: () => Promise<void>;
+  addOrg: (o: { name: string; sector: string; description?: string }) => Promise<boolean>;
+  removeOrg: (id: string) => Promise<void>;
   clearAllData: () => void;
-  toggleCheck: (i: number) => void;
   set: (p: Partial<State>) => void;
 }
 
@@ -106,9 +105,9 @@ export type Store = State & Actions;
 
 let logSeq = 0;
 let toastSeq = 0;
-let runSeq = 0;
-let playgroundToken = 0;
-let autoTimer: ReturnType<typeof setTimeout> | null = null;
+let launchSeq = 0;
+let launchToken = 0;
+let contTimer: ReturnType<typeof setTimeout> | null = null;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let quotaWarned = false;
 
@@ -116,59 +115,46 @@ const hhmmss = () => new Date().toTimeString().slice(0, 8);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const initialSettings = loadSettings();
-const usingEnvKey = !initialSettings.apiKey && !!ENV_KEY;
 const loaded = typeof localStorage !== 'undefined' ? loadData() : { migrated: false };
-const session = loadSession();
+const initialWs = loadWorkspace();
 
 export function effectiveKey(s: Settings) {
   return s.apiKey || ENV_KEY;
 }
 
+function parseHash(): { ws: Workspace | null; view: string | null } {
+  const [ws, view] = window.location.hash.replace(/^#\/?/, '').split('/');
+  if (ws && ws in VIEWS) return { ws: ws as Workspace, view: VIEWS[ws as Workspace].some((v) => v.id === view) ? view : null };
+  return { ws: null, view: null };
+}
+
 export const useStore: UseBoundStore<StoreApi<Store>> = create<Store>()((set, get) => ({
-  session,
-  tab: session ? DEFAULT_TAB[session.role] : 'alerts',
-  engineOn: false,
-  booting: false,
+  workspace: initialWs,
+  view: initialWs ? VIEWS[initialWs][0].id : '',
   data: loaded.data ?? emptyData(),
   audit: { intact: true, blocks: loaded.data?.audit.length ?? 0, checkedAt: new Date().toISOString() },
   logs: [],
-  terminalOpen: false,
-  paused: false,
   settings: initialSettings,
-  usingEnvKey,
-  island: null,
+  usingEnvKey: !initialSettings.apiKey && !!ENV_KEY,
   toasts: [],
-  settingsOpen: false,
-  guideOpen: false,
-  checklist: loadChecklist(),
   selectedAlertId: null,
   selectedCaseId: null,
-  demoRun: null,
-  demoClient: 'meezan',
-  playground: { running: false, sent: 0, total: 0, label: '' },
-  autoAttack: { on: false, nextAt: null },
+  launches: [],
+  continuous: { on: false, nextAt: null },
+  bootedAt: Date.now(),
 
   set: (p) => set(p),
 
-  login: (role) => {
-    write(KEYS.session, { role });
-    set({ session: { role }, tab: DEFAULT_TAB[role] });
-    get().log('INFO', `session created role=${role} token=${TOKENS[role]}`);
+  enter: (w, view) => {
+    write(KEYS.session, { workspace: w });
+    set({ workspace: w, view: view ?? VIEWS[w][0].id });
+    get().log('INFO', `session opened workspace=${w} role=${WORKSPACE_ROLE[w]} token=${TOKENS[WORKSPACE_ROLE[w]]}`);
   },
-  switchRole: (role) => {
-    write(KEYS.session, { role });
-    const { tab } = get();
-    set({ session: { role }, tab: canView(role, tab) ? tab : DEFAULT_TAB[role], island: { kind: 'switched', until: Date.now() + 3000, text: `Switched to ${ROLE_LABEL[role]}` } });
-    get().log('INFO', `role switched to ${role} (token ${TOKENS[role]})`);
-    get().toast(`You are now the ${ROLE_LABEL[role]}`);
-  },
-  signOut: () => {
+  leave: () => {
     try { localStorage.removeItem(KEYS.session); } catch { /* ignore */ }
-    get().cancelPlayground();
-    get().setAutoAttack(false);
-    set({ session: null, guideOpen: false, settingsOpen: false });
+    set({ workspace: null, view: '' });
   },
-  setTab: (tab) => set({ tab }),
+  go: (view, extra) => set({ view, ...(extra ?? {}) }),
 
   log: (level, text) => {
     const line: LogLine = { id: ++logSeq, ts: hhmmss(), level, text };
@@ -179,62 +165,22 @@ export const useStore: UseBoundStore<StoreApi<Store>> = create<Store>()((set, ge
   toast: (text, tone = 'info') => {
     const id = ++toastSeq;
     set((s) => ({ toasts: [...s.toasts.slice(-2), { id, text, tone }] }));
-    setTimeout(() => get().dismissToast(id), 4000);
+    setTimeout(() => get().dismissToast(id), 4500);
   },
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 
-  setEngine: async (on) => {
-    const s = get();
-    if (s.booting || s.engineOn === on) return;
-    if (on) {
-      set({ booting: true });
-      if (!s.settings.terminalAutoOpened) {
-        set({ terminalOpen: true });
-        get().updateSettings({ terminalAutoOpened: true });
-      }
-      const status = await engine.verify();
-      const key = effectiveKey(get().settings);
-      const lines: [LogLevel, string][] = [
-        ['INFO', 'Riskbyte starting (in-browser engine, dev mode)'],
-        ['INFO', `Storage: browser localStorage (key ${KEYS.state})`],
-        ['INFO', `Loaded ${RULES.length} Sigma rules`],
-        ['INFO', `Threat intel loaded: ${INDICATORS.length} indicators`],
-        [status.intact ? 'INFO' : 'WARN', `Audit ledger verified: ${status.blocks} blocks, ${status.intact ? 'chain intact' : `chain TAMPERED at block #${status.brokenAt}`}`],
-        ['INFO', 'Syslog UDP listener on 0.0.0.0:5514 (simulated)'],
-        ['INFO', 'REST ingest ready: POST /api/ingest (in-browser)'],
-        ['INFO', key ? `AI triage provider: gemini (model ${get().settings.model})` : 'AI triage provider: heuristic (no API key set)'],
-        ['OK', 'Engine ready. Listening for telemetry.'],
-      ];
-      for (const [lvl, text] of lines) {
-        get().log(lvl, `riskbyte  ${text}`);
-        await sleep(120 + Math.round(Math.random() * 130));
-      }
-      set({ booting: false, engineOn: true });
-      write(KEYS.engine, true);
-    } else {
-      get().log('INFO', 'riskbyte  Engine shutting down');
-      get().cancelPlayground();
-      get().setAutoAttack(false);
-      await sleep(150);
-      set({ engineOn: false });
-      get().log('INFO', 'riskbyte  Engine stopped');
-      write(KEYS.engine, false);
-    }
-  },
-
   api: async (method, path, opts = {}) => {
-    const role = get().session?.role;
-    const res = await request(apiCtx, method, path, { ...opts, token: role ? TOKENS[role] : undefined });
+    const ws = get().workspace;
+    const res = await request(apiCtx, method, path, { ...opts, token: ws ? TOKENS[WORKSPACE_ROLE[ws]] : undefined });
     if (res.status >= 400) {
       const b = res.body as { error?: string; detail?: string; problems?: string[]; route?: string; suggestion?: string };
       const msg =
-        res.status === 403 ? `403 Forbidden: ${b.detail}. Switch role from the badge in the top bar.`
-        : res.status === 401 ? '401: You are not signed in. Pick a role on the login screen.'
+        res.status === 403 ? `403 Forbidden: ${b.detail}.`
+        : res.status === 401 ? '401: Not signed in.'
         : res.status === 404 ? `404: ${b.route ?? path} not found. ${b.suggestion ?? ''}`
         : res.status === 409 ? `409: ${b.detail}`
         : res.status === 413 ? `413: ${b.detail}`
         : res.status === 400 ? `400: ${b.problems?.[0] ?? 'Invalid request'}`
-        : res.status === 503 ? `${b.detail}.`
         : `${res.status}: ${b.detail ?? b.error ?? 'Request failed'}`;
       get().toast(`${method} ${path.split('?')[0]} → ${msg}`, 'error');
     }
@@ -246,77 +192,70 @@ export const useStore: UseBoundStore<StoreApi<Store>> = create<Store>()((set, ge
     write(KEYS.settings, settings);
     set({ settings, usingEnvKey: !settings.apiKey && !!ENV_KEY });
   },
-
-  runScenario: async (id) => {
-    const s = scenarioById(id);
-    if (!s || !get().engineOn) return;
-    const cur = get().demoRun;
-    if (cur?.status === 'running' || get().playground.running) return;
-    const run: DemoRun = {
-      runId: ++runSeq, scenarioId: id, startedAt: Date.now(), status: 'running',
-      eventCountBefore: get().data.counters.event, alertCountBefore: get().data.counters.alert,
-    };
-    set({ demoRun: run });
-    get().log('ALERT', `attack launched: ${s.title} (${s.client}) — simulated`);
-    const res = await get().api('POST', '/api/ingest', { body: { events: scenarioEvents(s) }, origin: 'demo', scenarioId: id });
-    if (get().demoRun?.runId !== run.runId) return;
-    if (res.status !== 200) {
-      set({ demoRun: { ...run, status: 'error', error: (res.body as { detail?: string }).detail ?? 'Ingest failed' } });
-      return;
-    }
-    const out = res.body as { accepted: number; processingMs: number; alertIds: string[]; deduped: { alertId: string; ruleId: string }[] };
-    const alertId = out.alertIds.find((aid) => get().data.alerts.find((a) => a.id === aid)?.ruleId === s.ruleId) ?? out.alertIds[0];
-    const dedup = out.deduped.find((d) => d.ruleId === s.ruleId);
-    set({ demoRun: { ...run, status: 'done', accepted: out.accepted, processingMs: out.processingMs, alertId: alertId ?? dedup?.alertId, dedupedFrom: !alertId ? dedup?.alertId : undefined } });
+  setPolicy: (p) => {
+    const policy = { ...get().settings.policy, ...p, modes: { ...get().settings.policy.modes, ...(p.modes ?? {}) } };
+    get().updateSettings({ policy });
+    get().log('INFO', `agent policy updated: ${Object.entries(policy.modes).map(([a, m]) => `${a}=${m}`).join(' ')} min_confidence=${policy.minConfidence}`);
   },
 
-  launchPlayground: async (type, client, target, intensity, label) => {
-    if (!get().engineOn || get().playground.running) return;
-    const token = ++playgroundToken;
-    const evs = generate(type, client, target, intensity);
-    set({ playground: { running: true, sent: 0, total: evs.length, label } });
-    get().log('ALERT', `playground launch: ${label} client=${client} target=${target} intensity=${intensity} events=${evs.length}`);
+  launchAttack: async (type, org, target, intensity) => {
+    if (get().launches.some((l) => l.status === 'running')) return;
+    const def = attackById(type);
+    const id = ++launchSeq;
+    const token = ++launchToken;
+    const base: Launch = { id, attack: type, org, target: target || defaultTarget(org, type), startedAt: Date.now(), sent: 0, total: 0, status: 'running', firstEventNum: get().data.counters.event + 1 };
+
+    if (type === 'ledger_tamper') {
+      set((s) => ({ launches: [{ ...base, total: 1, target: 'audit ledger' }, ...s.launches].slice(0, 20) }));
+      await sleep(600);
+      const idx = await engine.tamper();
+      set((s) => ({ launches: s.launches.map((l) => (l.id === id ? { ...l, sent: 1, status: idx >= 0 ? 'delivered' : 'failed', detail: idx >= 0 ? `Record #${idx} altered in storage` : 'Ledger empty' } : l)) }));
+      return;
+    }
+
+    const evs = generate(type, org, target, intensity);
+    set((s) => ({ launches: [{ ...base, total: evs.length }, ...s.launches].slice(0, 20) }));
+    get().log('ALERT', `simulator: ${def.label} → org=${org} target=${base.target} intensity=${intensity} events=${evs.length}`);
     for (let i = 0; i < evs.length; i++) {
       const { delayMs, ...e } = evs[i];
       if (delayMs) await sleep(delayMs);
-      if (token !== playgroundToken || !get().engineOn) {
-        get().log('WARN', `playground run cancelled after ${i}/${evs.length} events`);
-        set({ playground: { running: false, sent: i, total: evs.length, label } });
+      if (token !== launchToken) {
+        set((s) => ({ launches: s.launches.map((l) => (l.id === id ? { ...l, status: 'cancelled' } : l)) }));
         return;
       }
-      // keep each event's timestamp at "now" so live streaming feels real
-      await get().api('POST', '/api/ingest', { body: { events: [{ ...e, ts: new Date().toISOString() }] }, origin: 'playground' });
-      set((st) => ({ playground: { ...st.playground, sent: i + 1 } }));
+      const res = await get().api('POST', '/api/ingest', { body: { events: [{ ...e, ts: new Date().toISOString() }] }, origin: 'demo' });
+      if (res.status !== 200) {
+        set((s) => ({ launches: s.launches.map((l) => (l.id === id ? { ...l, status: 'failed', detail: (res.body as { detail?: string }).detail } : l)) }));
+        return;
+      }
+      set((s) => ({ launches: s.launches.map((l) => (l.id === id ? { ...l, sent: i + 1 } : l)) }));
     }
-    set((st) => ({ playground: { ...st.playground, running: false } }));
-    get().toast(`Playground finished: ${evs.length} events sent`, 'ok');
+    set((s) => ({ launches: s.launches.map((l) => (l.id === id ? { ...l, status: 'delivered' } : l)) }));
   },
-  cancelPlayground: () => {
-    playgroundToken++;
-    set((s) => ({ playground: { ...s.playground, running: false } }));
-  },
+  cancelLaunch: () => { launchToken++; },
 
-  setAutoAttack: (on) => {
-    if (autoTimer) clearTimeout(autoTimer);
-    autoTimer = null;
-    if (!on || !get().engineOn) {
-      if (get().autoAttack.on) get().log('INFO', 'auto-attack stopped');
-      set({ autoAttack: { on: false, nextAt: null } });
+  setContinuous: (on) => {
+    if (contTimer) clearTimeout(contTimer);
+    contTimer = null;
+    if (!on) {
+      if (get().continuous.on) get().log('INFO', 'simulator: continuous attacks stopped');
+      set({ continuous: { on: false, nextAt: null } });
       return;
     }
+    const pool = ATTACKS.filter((a) => a.ruleId);
     const schedule = () => {
       const delay = 20000 + Math.round(Math.random() * 10000);
-      set({ autoAttack: { on: true, nextAt: Date.now() + delay } });
-      autoTimer = setTimeout(async () => {
-        if (!get().engineOn || !get().autoAttack.on) return get().setAutoAttack(false);
-        const s = SCENARIOS[Math.floor(Math.random() * SCENARIOS.length)];
-        get().log('ALERT', `auto-attack fired: ${s.title} (${s.client}) — simulated`);
-        get().toast(`Auto-attack: ${s.title}`);
-        await get().api('POST', '/api/ingest', { body: { events: scenarioEvents(s) }, origin: 'demo', scenarioId: s.id });
-        if (get().autoAttack.on && get().engineOn) schedule();
+      set({ continuous: { on: true, nextAt: Date.now() + delay } });
+      contTimer = setTimeout(async () => {
+        if (!get().continuous.on) return;
+        const a = pool[Math.floor(Math.random() * pool.length)];
+        const orgs = getOrgs();
+        const o = orgs[Math.floor(Math.random() * orgs.length)];
+        if (!get().launches.some((l) => l.status === 'running')) await get().launchAttack(a.id, o.id, '', 3);
+        if (get().continuous.on) schedule();
       }, delay);
     };
-    get().log('INFO', 'auto-attack enabled (random scenario every 20-30s; never auto-approves)');
+    get().log('INFO', 'simulator: continuous attacks enabled (random attack every 20-30s)');
     schedule();
   },
 
@@ -324,47 +263,43 @@ export const useStore: UseBoundStore<StoreApi<Store>> = create<Store>()((set, ge
     const res = await get().api('POST', `/api/alerts/${alertId}/${kind}`);
     if (res.status === 200) {
       const b = res.body as { idempotent?: boolean; block?: { index: number } };
-      if (b.idempotent) get().toast(`Already ${kind === 'approve' ? 'approved' : 'dismissed'}; showing the existing outcome`);
-      else get().toast(kind === 'approve' ? `Approved. Dry-run executed and written to audit block #${b.block?.index}` : `Alert dismissed (audit block #${b.block?.index})`, 'ok');
+      if (b.idempotent) get().toast(`Already ${kind === 'approve' ? 'approved' : 'dismissed'}`);
+      else get().toast(kind === 'approve' ? `${alertId} approved · containment executed (dry-run) · audit #${b.block?.index}` : `${alertId} dismissed · audit #${b.block?.index}`, 'ok');
     }
   },
 
   verifyAudit: async () => {
     const st: AuditStatus = await engine.verify();
-    get().log(st.intact ? 'OK' : 'ERROR', st.intact ? `verify-audit: Intact (${st.blocks} blocks, SHA-256)` : `verify-audit: TAMPERED at block #${st.brokenAt}`);
+    get().log(st.intact ? 'OK' : 'ERROR', st.intact ? `verify-audit: intact (${st.blocks} blocks, SHA-256)` : `verify-audit: TAMPERED at block #${st.brokenAt}`);
     return st;
   },
-  tamper: async () => {
-    const role = get().session?.role;
-    if (role !== 'admin') return get().toast('Only the Administrator can run the tamper demo', 'error');
-    await engine.tamper();
-    const st = get().audit;
-    if (!st.intact) get().toast(`Tampering detected at block #${st.brokenAt}`, 'error');
-  },
   repair: async () => {
-    if (get().session?.role !== 'admin') return get().toast('Only the Administrator can repair the ledger', 'error');
     await engine.repair(actorFor('admin'));
-    get().toast(get().audit.intact ? 'Chain rebuilt. Hash Chain: Intact' : 'Repair failed', get().audit.intact ? 'ok' : 'error');
+    get().toast(get().audit.intact ? 'Ledger rebuilt. Hash chain intact.' : 'Repair failed', get().audit.intact ? 'ok' : 'error');
   },
-  resetDemo: async () => {
-    get().cancelPlayground();
-    get().setAutoAttack(false);
+  resetData: async () => {
+    get().cancelLaunch();
+    get().setContinuous(false);
     const res = await get().api('POST', '/api/demo/reset');
     if (res.status === 200) {
-      set({ demoRun: null, selectedAlertId: null, selectedCaseId: null });
-      get().toast('Demo data reset. Fresh ledger started.', 'ok');
+      set({ selectedAlertId: null, selectedCaseId: null, launches: [] });
+      get().toast('Platform data cleared. New ledger started.', 'ok');
     }
+  },
+  addOrg: async (o) => {
+    if (!o.name.trim()) return false;
+    const org = await engine.addOrg(o, actorFor('admin'));
+    get().toast(`${org.name} onboarded (id ${org.id})`, 'ok');
+    return true;
+  },
+  removeOrg: async (id) => {
+    const ok = await engine.removeOrg(id, actorFor('admin'));
+    get().toast(ok ? 'Organization offboarded. History is kept.' : 'At least one organization is required', ok ? 'ok' : 'error');
   },
   clearAllData: () => {
     clearAll();
     window.location.hash = '';
     window.location.reload();
-  },
-  toggleCheck: (i) => {
-    const c = [...get().checklist];
-    c[i] = !c[i];
-    write(KEYS.checklist, c);
-    set({ checklist: c });
   },
 }));
 
@@ -376,11 +311,11 @@ const engine: Engine = new Engine(
       const s: Settings = useStore.getState().settings;
       return { apiKey: effectiveKey(s), model: s.model || 'gemini-2.5-flash' };
     },
+    policy: () => useStore.getState().settings.policy,
     onChange: (data, audit) => {
-      const prev = useStore.getState().data;
-      const prevIds = new Set(prev.alerts.map((a) => a.id));
-      const newCritical = data.alerts.find((a) => !prevIds.has(a.id) && a.severity === 'CRITICAL');
-      useStore.setState({ data, audit, ...(newCritical ? { island: { kind: 'critical' as const, until: Date.now() + 6000 } } : {}) });
+      const prevAudit = useStore.getState().audit;
+      useStore.setState({ data, audit });
+      if (prevAudit.intact && !audit.intact) useStore.getState().toast(`Ledger integrity failure at block #${audit.brokenAt}`, 'error');
       if (persistTimer) clearTimeout(persistTimer);
       persistTimer = setTimeout(() => {
         const ok = write(KEYS.state, useStore.getState().data);
@@ -396,7 +331,7 @@ const engine: Engine = new Engine(
 
 export const apiCtx = {
   engine,
-  isEngineOn: () => useStore.getState().engineOn,
+  isEngineOn: () => true,
   provider: () => {
     const s = useStore.getState().settings;
     return effectiveKey(s) ? { provider: 'gemini' as const, model: s.model } : { provider: 'heuristic' as const, model: 'riskbyte-heuristic-v1' };
@@ -406,9 +341,32 @@ export const apiCtx = {
 
 export { engine };
 
+export function syncFromHash() {
+  const { ws, view } = parseHash();
+  const st = useStore.getState();
+  if (ws && (ws !== st.workspace || (view && view !== st.view))) {
+    write(KEYS.session, { workspace: ws });
+    useStore.setState({ workspace: ws, view: view ?? VIEWS[ws][0].id });
+  } else if (!ws && window.location.hash === '' && st.workspace) {
+    // keep the stored session
+  }
+}
+
 export async function bootstrap() {
+  try { localStorage.removeItem('riskbyte.state.v1'); localStorage.removeItem('riskbyte.checklist.v1'); localStorage.removeItem('riskbyte.engine.v1'); } catch { /* ignore */ }
   await engine.init();
+  const st = useStore.getState();
+  const key = effectiveKey(st.settings);
+  const lines: [LogLevel, string][] = [
+    ['INFO', 'riskbyte  agent starting (in-browser engine)'],
+    ['INFO', `riskbyte  storage: browser localStorage (key ${KEYS.state})`],
+    ['INFO', `riskbyte  organizations: ${engine.data.orgs.map((o) => o.id).join(', ')}`],
+    ['INFO', `riskbyte  loaded ${RULES.length} Sigma rules, ${INDICATORS.length} threat-intel indicators`],
+    [engine.auditStatus.intact ? 'INFO' : 'WARN', `riskbyte  audit ledger verified: ${engine.auditStatus.blocks} blocks, ${engine.auditStatus.intact ? 'chain intact' : `chain TAMPERED at block #${engine.auditStatus.brokenAt}`}`],
+    ['INFO', 'riskbyte  syslog UDP listener 0.0.0.0:5514 (simulated) · REST POST /api/ingest ready'],
+    ['INFO', key ? `riskbyte  AI triage provider: gemini (${st.settings.model})` : 'riskbyte  AI triage provider: heuristic (no API key set)'],
+    ['OK', 'riskbyte  agent online. Listening for telemetry.'],
+  ];
+  for (const [l, t] of lines) st.log(l, t);
   if (loaded.migrated) setTimeout(() => useStore.getState().toast('Stored data was from an older version and was reset.'), 300);
-  const s = useStore.getState().settings;
-  if (s.rememberEngine && loadEngineOn()) await useStore.getState().setEngine(true);
 }

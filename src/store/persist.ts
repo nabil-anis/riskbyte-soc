@@ -1,26 +1,23 @@
-import type { EngineData, Role } from '../engine/types';
+import type { AgentPolicy, EngineData } from '../engine/types';
+import { DEFAULT_POLICY } from '../engine/engineState';
+
+export type Workspace = 'analyst' | 'admin' | 'ingest' | 'demo';
 
 export const KEYS = {
-  state: 'riskbyte.state.v1',
+  state: 'riskbyte.state.v2',
   settings: 'riskbyte.settings.v1',
   session: 'riskbyte.session.v1',
-  checklist: 'riskbyte.checklist.v1',
-  engine: 'riskbyte.engine.v1',
 };
 
 export interface Settings {
   apiKey: string;
   model: string;
-  speed: 'fast' | 'normal' | 'slow';
-  rememberEngine: boolean;
-  terminalAutoOpened: boolean;
+  policy: AgentPolicy;
 }
-
-export const SPEED_MS: Record<Settings['speed'], number> = { fast: 400, normal: 900, slow: 1600 };
 
 export const ENV_KEY: string = (import.meta.env?.VITE_GEMINI_API_KEY as string | undefined) ?? '';
 
-export const DEFAULT_SETTINGS: Settings = { apiKey: '', model: 'gemini-2.5-flash', speed: 'normal', rememberEngine: false, terminalAutoOpened: false };
+export const DEFAULT_SETTINGS: Settings = { apiKey: '', model: 'gemini-2.5-flash', policy: DEFAULT_POLICY };
 
 function read<T>(key: string): T | undefined {
   try {
@@ -42,30 +39,23 @@ export function write(key: string, value: unknown): boolean {
 }
 
 export function loadSettings(): Settings {
-  return { ...DEFAULT_SETTINGS, ...(read<Partial<Settings>>(KEYS.settings) ?? {}) };
+  const s = read<Partial<Settings>>(KEYS.settings) ?? {};
+  return { ...DEFAULT_SETTINGS, ...s, policy: { ...DEFAULT_POLICY, ...(s.policy ?? {}), modes: { ...DEFAULT_POLICY.modes, ...(s.policy?.modes ?? {}) } } };
 }
 
-export function loadSession(): { role: Role } | null {
-  const s = read<{ role: Role }>(KEYS.session);
-  return s && ['ingest', 'analyst', 'admin'].includes(s.role) ? s : null;
+export function loadWorkspace(): Workspace | null {
+  const s = read<{ workspace?: Workspace }>(KEYS.session);
+  return s?.workspace && ['ingest', 'analyst', 'admin', 'demo'].includes(s.workspace) ? s.workspace : null;
 }
 
 export function loadData(): { data?: EngineData; migrated: boolean } {
   const d = read<EngineData>(KEYS.state);
   if (!d) return { migrated: false };
-  if (d.version !== 1 || !Array.isArray(d.audit) || !Array.isArray(d.events)) {
+  if (d.version !== 2 || !Array.isArray(d.audit) || !Array.isArray(d.events)) {
     try { localStorage.removeItem(KEYS.state); } catch { /* ignore */ }
     return { migrated: true };
   }
   return { data: d, migrated: false };
-}
-
-export function loadChecklist(): boolean[] {
-  return read<boolean[]>(KEYS.checklist) ?? [];
-}
-
-export function loadEngineOn(): boolean {
-  return read<boolean>(KEYS.engine) ?? false;
 }
 
 export function storageBytes(): number {
