@@ -3,6 +3,7 @@ import { useStore, VIEWS, WORKSPACE_LABEL, WORKSPACE_ROLE, syncFromHash, tierSta
 import { MonitorPill, AiPill } from './components/Live';
 import { TOKENS } from './engine/auth';
 import { Toasts } from './components/ui';
+import { AuthGate } from './components/AuthGate';
 import Landing from './pages/Landing';
 import AnalystWorkspace from './pages/Analyst';
 import AdminWorkspace from './pages/Admin';
@@ -19,9 +20,11 @@ const SUBTITLE: Record<string, string> = {
   'analyst/activity': 'Everything the AI agent has done, newest first',
   'admin/overview': 'Platform health across every organization',
   'admin/orgs': 'Organizations whose telemetry Riskbyte monitors',
+  'admin/containment': 'Controls Riskbyte is enforcing right now',
+  'admin/access': 'Console accounts, sessions and sign-in security',
   'admin/agent': 'AI provider and how much autonomy the agent has',
   'admin/rules': 'Sigma-style detection content',
-  'admin/intel': 'Known-bad indicators used for enrichment',
+  'admin/intel': 'Live feeds (abuse.ch, OpenPhish) plus the local list',
   'admin/ledger': 'SHA-256 hash-chained record of every action',
   'admin/system': 'License, storage, API and data management',
   'ingest/overview': 'Collectors, endpoints and throughput per organization',
@@ -36,6 +39,8 @@ function Sidebar({ ws }: { ws: Workspace }) {
   const view = useStore((s) => s.view);
   const go = useStore((s) => s.go);
   const leave = useStore((s) => s.leave);
+  const signOut = useStore((s) => s.signOut);
+  const session = useStore((s) => (ws === 'demo' ? null : s.sessions[WORKSPACE_ROLE[ws]]));
   const pending = useStore((s) => s.data.alerts.filter((a) => a.status === 'triaged' || a.status === 'new').length);
   const openInc = useStore((s) => s.data.cases.filter((c) => c.status === 'open').length);
   const counts: Record<string, number> = ws === 'analyst' ? { alerts: pending, incidents: openInc } : {};
@@ -45,7 +50,7 @@ function Sidebar({ ws }: { ws: Workspace }) {
       <div className="side-ws">
         <div className="label">Workspace</div>
         <b>{WORKSPACE_LABEL[ws]}</b>
-        <span className="small">{ws === 'demo' ? 'Simulation only' : `Signed in · ${WORKSPACE_ROLE[ws]}`}</span>
+        <span className="small">{ws === 'demo' ? 'Simulation only' : `${session?.username ?? '-'} · ${WORKSPACE_ROLE[ws]}`}</span>
       </div>
       <nav className="side-nav">
         {VIEWS[ws].map((v) => (
@@ -56,8 +61,9 @@ function Sidebar({ ws }: { ws: Workspace }) {
         ))}
       </nav>
       <div className="side-foot">
-        <span className="tok">token: {TOKENS[WORKSPACE_ROLE[ws]]}</span>
+        <span className="tok">{session ? `session until ${new Date(session.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : `token: ${TOKENS[WORKSPACE_ROLE[ws]]}`}</span>
         <button type="button" className="switch-btn" onClick={leave}>⇄ Switch workspace</button>
+        {ws !== 'demo' && <button type="button" className="switch-btn" onClick={signOut}>⎋ Sign out</button>}
         <span className="credit">{CREDIT}</span>
       </div>
     </aside>
@@ -131,7 +137,7 @@ export default function App() {
     window.scrollTo({ top: 0 });
   }, [ws, view]);
 
-  if (!ws) return (<><Landing /><Toasts /></>);
+  if (!ws) return (<><Landing /><AuthGate /><Toasts /></>);
   const Page = PAGES[ws];
   const title = VIEWS[ws].find((v) => v.id === view)?.label ?? '';
   return (
@@ -153,6 +159,7 @@ export default function App() {
           <Page />
         </main>
       </div>
+      <AuthGate />
       <Toasts />
     </div>
   );

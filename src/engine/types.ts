@@ -62,6 +62,7 @@ export interface Indicator {
   category: string;
   confidence: number;
   note: string;
+  source?: string;
 }
 
 export interface Alert {
@@ -100,6 +101,19 @@ export interface Org {
   description?: string;
   createdAt: string;
   builtIn?: boolean;
+  /** Riskbyte's own real telemetry (console sign-ins, client errors, connectivity) */
+  platform?: boolean;
+}
+
+/** A containment control that Riskbyte enforces on all later telemetry. */
+export interface Control {
+  id: string;
+  kind: Action;
+  value: string;
+  client: ClientId;
+  alertId?: string;
+  by: string;
+  at: string;
 }
 
 export type ApprovalMode = 'approve' | 'auto';
@@ -159,7 +173,7 @@ export function classifyLog(text: string): LogSource {
   if (/^(audit block|ledger|verify-audit|audit verification)/.test(text)) return 'audit';
   if (/^(agent |gemini|dry-run)/.test(text)) return 'agent';
   if (/^simulator/.test(text)) return 'simulator';
-  if (/^(scan |normalize|rule |intel |case |dedupe|correlated)/.test(text)) return 'pipeline';
+  if (/^(scan |normalize|rule |intel |case |dedupe|correlated|enforce)/.test(text)) return 'pipeline';
   return 'system';
 }
 
@@ -170,6 +184,7 @@ export interface EngineData {
   alerts: Alert[];
   cases: Case[];
   audit: AuditBlock[];
+  controls?: Control[];
   counters: { event: number; alert: number; case: number; totalIngested: number; batches: number; totalMs: number };
 }
 

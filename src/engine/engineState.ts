@@ -1,4 +1,4 @@
-import type { AgentPolicy, AgentStep, Alert, AuditBlock, AuditStatus, ClientId, EngineData, LogLevel, Org, Origin, RiskEvent, Triage } from './types';
+import type { AgentPolicy, AgentStep, Alert, AuditBlock, AuditStatus, ClientId, Control, EngineData, LogLevel, Org, Origin, RiskEvent, Triage } from './types';
 import { SEV_RANK } from './types';
 import { appendBlock, genesis, verifyChain, tamper as tamperChain, repairChain, type AppendInput } from './audit';
 import { MAX_BATCH, normalizeEvent, validateBatch } from './normalize';
@@ -7,7 +7,7 @@ import { matchIntel } from './intel';
 import { attachToCase, refreshCaseStatus } from './cases';
 import { triage, type TriageConfig } from './triage';
 import { proposeContainment } from './containment';
-import { clientName, DEFAULT_ORGS, setOrgs, slugify } from '../data/clients';
+import { clientName, DEFAULT_ORGS, PLATFORM_ORG, setOrgs, slugify } from '../data/clients';
 import { ruleById, RULES } from '../data/rules';
 
 const RULES_COUNT = RULES.length;
@@ -47,6 +47,8 @@ export interface IngestOutcome {
   alertIds: string[];
   deduped: { ruleId: string; alertId: string; entity: string }[];
   processingMs: number;
+  /** events changed by an active containment control (blocked, denied, quarantined, challenged) */
+  enforced: number;
 }
 
 export function emptyData(orgs: Org[] = DEFAULT_ORGS): EngineData {
@@ -64,6 +66,8 @@ export class Engine {
   constructor(private deps: EngineDeps, initial?: EngineData) {
     this.data = initial ?? emptyData();
     if (!this.data.orgs?.length) this.data = { ...this.data, orgs: DEFAULT_ORGS };
+    if (!this.data.orgs.some((o) => o.id === PLATFORM_ORG.id)) this.data = { ...this.data, orgs: [PLATFORM_ORG, ...this.data.orgs] };
+    if (!this.data.controls) this.data = { ...this.data, controls: [] };
     setOrgs(this.data.orgs);
   }
 
@@ -114,7 +118,13 @@ export class Engine {
     const stage = await this.exclusive(async () => {
       const t0 = performance.now();
       let { counters } = this.data;
-      const newEvents: RiskEvent[] = raw.map((r, i) => normalizeEvent(r as Record<string, unknown>, counters.event + i + 1, opts.origin));
+      let enforced = 0;
+      const newEvents: RiskEvent[] = raw.map((r, i) => {
+        const e = normalizeEvent(r as Record<string, unknown>, counters.event + i + 1, opts.origin);
+        const out = this.enforce(e);
+        if (out !== e) enforced++;
+        return out;
+      });
       counters = { ...counters, event: counters.event + newEvents.length, totalIngested: counters.totalIngested + newEvents.length };
       let events = [...this.data.events, ...newEvents];
       if (events.length > MAX_STORED_EVENTS) {
@@ -164,7 +174,7 @@ export class Engine {
       const createdIds = new Set(created.map((a) => a.id));
       alerts = alerts.map((a) => {
         if (createdIds.has(a.id) || a.status === 'executed' || a.status === 'dismissed') return a;
-        const add = newEvents.filter((e) => e.client === a.client && Math.abs(Date.parse(e.ts) - Date.parse(a.ts)) <= 600_000 &&
+        const add = newEvents.filter((e) => !e.meta?.baseline && e.client === a.client && Math.abs(Date.parse(e.ts) - Date.parse(a.ts)) <= 600_000 &&
           ((a.host && e.host === a.host) || (a.user && e.user === a.user)) && !a.eventIds.includes(e.id));
         if (!add.length) return a;
         const merged = new Map(a.intelHits.map((h) => [h.value, h]));
@@ -199,6 +209,7 @@ export class Engine {
           alertIds: created.map((a) => a.id),
           deduped: deduped.map((d) => ({ ruleId: d.rule.id, alertId: d.alertId, entity: d.entity })),
           processingMs,
+          enforced,
         } as IngestOutcome,
       };
     });
@@ -239,7 +250,7 @@ export class Engine {
       this.patchAlert(alertId, (a) => ({ ...a, triage: result, status, timeline: [...a.timeline, ...steps] }));
       await this.append({ client: current.client, actor: `ai:${result.provider}`, kind: 'triage.completed', alertId, detail: `verdict=${result.verdict} confidence=${result.confidence} provider=${result.provider}${result.provider === 'gemini' ? ` model=${result.model}` : ''}` });
       if (autoOk && !current.outcome) {
-        this.deps.log('OK', `agent ${alertId}: auto-executing ${proposal} under policy (dry-run)`);
+        this.deps.log('OK', `agent ${alertId}: auto-enforcing ${proposal} under policy`);
         await this.applyDecision(alertId, 'approve', AGENT_ACTOR, true);
       } else {
         this.deps.log('INFO', `agent ${alertId}: proposed ${proposal} (awaiting approval)`);
@@ -249,22 +260,66 @@ export class Engine {
     });
   }
 
+  /**
+   * Applies active containment controls to an incoming event, the way a firewall, IdP or EDR would:
+   * blocked IPs are dropped, disabled accounts are denied, isolated hosts lose network access,
+   * and accounts under a forced reset get challenged instead of signed in.
+   */
+  private enforce(e: RiskEvent): RiskEvent {
+    const controls = this.data.controls ?? [];
+    if (!controls.length) return e;
+    const has = (kind: Control['kind'], v?: string) => !!v && controls.some((c) => c.kind === kind && c.value === v.toLowerCase());
+    const mark = (action: string, tag: string): RiskEvent => {
+      this.deps.log('WARN', `enforce ${e.id} ${tag} (${e.action} → ${action})`);
+      return { ...e, action, message: `[${tag}] ${e.message}`, meta: { ...(e.meta ?? {}), originalAction: e.action, enforced: true } };
+    };
+    if (has('block_ip', e.ip)) return mark('connection_blocked', `BLOCKED: ${e.ip} is on the Riskbyte blocklist`);
+    if (has('disable_user', e.user) && /^login_/.test(e.action)) return mark('login_denied', `DENIED: account ${e.user} is disabled`);
+    if (has('isolate_host', e.host) && ['net_upload', 'net_connect', 'dns_query', 'link_click'].includes(e.action)) return mark('network_quarantined', `QUARANTINED: host ${e.host} is isolated`);
+    if (has('reset_password', e.user) && e.action === 'login_success') return mark('login_challenged', `CHALLENGED: ${e.user} must reset password`);
+    return e;
+  }
+
+  isControlled(kind: Control['kind'], value: string): boolean {
+    return (this.data.controls ?? []).some((c) => c.kind === kind && c.value === value.toLowerCase());
+  }
+
+  async releaseControl(id: string, actor: string): Promise<boolean> {
+    return this.exclusive(async () => {
+      const c = (this.data.controls ?? []).find((x) => x.id === id);
+      if (!c) return false;
+      this.data = { ...this.data, controls: (this.data.controls ?? []).filter((x) => x.id !== id) };
+      await this.append({ client: c.client, actor, kind: 'containment.released', alertId: c.alertId, detail: `released ${c.kind} ${c.value}` });
+      this.deps.log('OK', `enforce: released ${c.kind} ${c.value}`);
+      this.auditStatus = await verifyChain(this.data.audit);
+      this.commit(this.data);
+      return true;
+    });
+  }
+
   /** Must be called inside exclusive(). */
   private async applyDecision(alertId: string, kind: 'approve' | 'dismiss', actor: string, auto = false) {
     const a = this.data.alerts.find((x) => x.id === alertId)!;
     const at = new Date().toISOString();
-    if (kind === 'approve') this.deps.log('INFO', `dry-run: would execute ${a.proposed.action} ${a.proposed.target}`);
+    if (kind === 'approve') {
+      const value = a.proposed.target.toLowerCase();
+      if (!this.isControlled(a.proposed.action, value)) {
+        const ctl: Control = { id: `K-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, kind: a.proposed.action, value, client: a.client, alertId: a.id, by: actor, at };
+        this.data = { ...this.data, controls: [...(this.data.controls ?? []), ctl] };
+      }
+      this.deps.log('OK', `enforce: ${a.proposed.action} ${a.proposed.target} is now active; matching telemetry will be blocked`);
+    }
     const block = await this.append({
       client: a.client,
       actor,
       kind: kind === 'approve' ? (auto ? 'containment.auto_executed' : 'containment.approved') : 'alert.dismissed',
       alertId: a.id,
-      detail: kind === 'approve' ? `dry-run ${a.proposed.action} ${a.proposed.target} (no device touched)` : `alert dismissed; no action taken on ${a.proposed.target}`,
+      detail: kind === 'approve' ? `enforced ${a.proposed.action} ${a.proposed.target} in the Riskbyte control plane` : `alert dismissed; no action taken on ${a.proposed.target}`,
     });
     const s = kind === 'approve'
       ? step(auto ? 'auto' : 'execute', auto
-        ? `Auto-executed ${a.proposed.action} ${a.proposed.target} under policy (dry-run) · audit #${block.index}`
-        : `Executed ${a.proposed.action} ${a.proposed.target} (dry-run), approved by ${actor} · audit #${block.index}`)
+        ? `Auto-enforced ${a.proposed.action} ${a.proposed.target} under policy · audit #${block.index}`
+        : `Enforced ${a.proposed.action} ${a.proposed.target}, approved by ${actor} · audit #${block.index}`)
       : step('dismiss', `Dismissed by ${actor}; no action taken · audit #${block.index}`);
     this.patchAlert(alertId, (x) => ({
       ...x,
@@ -310,13 +365,47 @@ export class Engine {
   async removeOrg(id: string, actor: string): Promise<boolean> {
     return this.exclusive(async () => {
       const org = this.data.orgs.find((o) => o.id === id);
-      if (!org || this.data.orgs.length <= 1) return false;
+      if (!org || org.platform || this.data.orgs.length <= 1) return false;
       this.data = { ...this.data, orgs: this.data.orgs.filter((o) => o.id !== id) };
       await this.append({ client: 'system', actor, kind: 'org.removed', detail: `Organization "${org.name}" (${org.id}) offboarded; its history is kept` });
       this.deps.log('WARN', `organization offboarded: ${org.name}`);
       this.auditStatus = await verifyChain(this.data.audit);
       this.commit(this.data);
       return true;
+    });
+  }
+
+  /** Replaces all data (used when restoring from the Cache Storage mirror). */
+  async load(data: EngineData) {
+    return this.exclusive(async () => {
+      this.data = { ...data, controls: data.controls ?? [] };
+      if (!this.data.orgs.some((o) => o.id === PLATFORM_ORG.id)) this.data = { ...this.data, orgs: [PLATFORM_ORG, ...this.data.orgs] };
+      this.auditStatus = await verifyChain(this.data.audit);
+      this.commit(this.data);
+    });
+  }
+
+  /** Records a period when nobody had the console open (monitoring was not running). */
+  async recordGap(from: string, to: string) {
+    const mins = Math.round((Date.parse(to) - Date.parse(from)) / 60000);
+    this.deps.log('WARN', `riskbyte  monitoring gap: console was closed for ${mins} min (${from} → ${to}); data restored from storage`);
+    return this.checkpointKind('monitoring.gap', `No monitoring between ${from} and ${to} (${mins} min): console closed`);
+  }
+
+  /** Writes an arbitrary audit record (sign-ins, lockouts, account changes). */
+  async record(kind: string, detail: string, actor: string, client: ClientId | 'system' = 'riskbyte') {
+    return this.exclusive(async () => {
+      await this.append({ client, actor, kind, detail });
+      this.auditStatus = await verifyChain(this.data.audit);
+      this.commit(this.data);
+    });
+  }
+
+  private async checkpointKind(kind: string, detail: string) {
+    return this.exclusive(async () => {
+      await this.append({ client: 'system', actor: 'system:monitor', kind, detail });
+      this.auditStatus = await verifyChain(this.data.audit);
+      this.commit(this.data);
     });
   }
 
@@ -333,7 +422,7 @@ export class Engine {
     return this.exclusive(async () => {
       const g = await genesis();
       const { chain } = await appendBlock([g], { client: 'system', actor, kind: 'system.reset', detail: 'Platform data reset: events, alerts, incidents and ledger cleared' });
-      this.data = { ...emptyData(this.data.orgs), audit: chain };
+      this.data = { ...emptyData(this.data.orgs), audit: chain, controls: [] };
       this.auditStatus = await verifyChain(chain);
       this.deps.log('WARN', `platform data reset by ${actor}; new ledger genesis hash=${shortHash(g.hash)}`);
       this.commit(this.data);

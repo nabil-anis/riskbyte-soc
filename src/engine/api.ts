@@ -81,6 +81,8 @@ export interface RequestOptions {
   silent?: boolean;
   quiet?: boolean;
   auditMode?: 'always' | 'onAlert';
+  /** actor recorded in the ledger, e.g. analyst:nabil (defaults to the role's service name) */
+  actor?: string;
 }
 
 /** Mock REST API that runs in the browser. Every call returns {status, body} and is logged. */
@@ -136,7 +138,7 @@ async function handle(ctx: ApiContext, method: Method, path: string, opts: Reque
     case 'POST /api/alerts/:id/approve':
     case 'POST /api/alerts/:id/dismiss': {
       if (!ctx.isEngineOn()) return { status: 503, body: { error: 'engine off', detail: 'Turn the Engine on first' } };
-      return engine.decide(id, key.endsWith('approve') ? 'approve' : 'dismiss', actorFor(role));
+      return engine.decide(id, key.endsWith('approve') ? 'approve' : 'dismiss', opts.actor ?? actorFor(role));
     }
     case 'GET /api/cases':
       return { status: 200, body: { count: d.cases.length, cases: [...d.cases].reverse() } };
@@ -151,7 +153,7 @@ async function handle(ctx: ApiContext, method: Method, path: string, opts: Reque
       if (!Array.isArray(events)) return { status: 400, body: { error: 'bad request', problems: ['Body must be {"events": [ ... ]} or an array of events'] } };
       if (events.length > MAX_BATCH) return { status: 413, body: { error: 'payload too large', detail: `Batch has ${events.length} events; the limit is ${MAX_BATCH} per request. Split it into smaller batches.` } };
       try {
-        const out = await engine.ingest(events, { origin: opts.origin ?? 'ingest-api', scenarioId: opts.scenarioId, actor: actorFor(role), onStaged: opts.onStaged, quiet: opts.quiet, auditMode: opts.auditMode });
+        const out = await engine.ingest(events, { origin: opts.origin ?? 'ingest-api', scenarioId: opts.scenarioId, actor: opts.actor ?? actorFor(role), onStaged: opts.onStaged, quiet: opts.quiet, auditMode: opts.auditMode });
         return { status: 200, body: out };
       } catch (e) {
         const err = e as Error & { problems?: string[] };
@@ -160,7 +162,7 @@ async function handle(ctx: ApiContext, method: Method, path: string, opts: Reque
       }
     }
     case 'POST /api/demo/reset':
-      await engine.reset(actorFor(role));
+      await engine.reset(opts.actor ?? actorFor(role));
       return { status: 200, body: { ok: true, detail: 'Demo data reset' } };
   }
   return { status: 404, body: { error: 'route not found', route: key, suggestion: 'Check the path', routes: ROUTE_LIST } };

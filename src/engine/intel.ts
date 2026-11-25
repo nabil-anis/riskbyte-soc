@@ -1,10 +1,32 @@
 import type { Indicator, RiskEvent } from './types';
 import { INDICATORS } from '../data/indicators';
 
+/** Live indicators from real feeds (abuse.ch Feodo Tracker, OpenPhish), merged with the local list. */
+let live = new Map<string, Indicator>();
+let liveMeta: { fetchedAt?: string; sources: { name: string; ok: boolean; count: number; error?: string; url?: string }[] } = { sources: [] };
+
+export function setLiveIntel(list: Indicator[], meta: typeof liveMeta) {
+  live = new Map(list.map((i) => [i.value.toLowerCase(), i]));
+  liveMeta = meta;
+}
+export const liveIntel = () => ({ indicators: [...live.values()], ...liveMeta });
+
 export function lookup(value: string | undefined): Indicator | undefined {
   if (!value) return undefined;
   const v = value.toLowerCase();
-  return INDICATORS.find((i) => i.value === v);
+  const local = INDICATORS.find((i) => i.value === v);
+  if (local) return local;
+  const hit = live.get(v);
+  if (hit) return hit;
+  // A domain matches if it is a subdomain of a known-bad domain.
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(v)) {
+    const parts = v.split('.');
+    for (let i = 1; i < parts.length - 1; i++) {
+      const parent = live.get(parts.slice(i).join('.'));
+      if (parent) return { ...parent, value: v, note: `subdomain of ${parent.value} · ${parent.note}` };
+    }
+  }
+  return undefined;
 }
 
 /** Match every IP and domain on the given events against the indicator list (deduplicated). */

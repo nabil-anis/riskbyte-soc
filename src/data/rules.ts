@@ -2,6 +2,8 @@ import type { Rule, RiskEvent } from '../engine/types';
 import { FLAGGED_PHISHING_DOMAINS } from './indicators';
 import { isUntrustedIp, lookup } from '../engine/intel';
 
+const isPhishingDomain = (d: string) => FLAGGED_PHISHING_DOMAINS.includes(d) || /phishing/.test(lookup(d)?.category ?? '');
+
 const t = (e: RiskEvent) => new Date(e.ts).getTime();
 const msg = (e: RiskEvent) => (e.message || '').toLowerCase();
 const proc = (e: RiskEvent) => (e.process || '').toLowerCase();
@@ -79,7 +81,7 @@ export const RULES: Rule[] = [
       if (e.action !== 'login_success' || !e.user || !isUntrustedIp(e.ip)) return null;
       const click = w.find(
         (x) => x.action === 'link_click' && x.user === e.user && x.client === e.client && !!x.domain &&
-          FLAGGED_PHISHING_DOMAINS.includes(x.domain) && t(x) <= t(e) && t(e) - t(x) <= 600_000,
+          isPhishingDomain(x.domain) && t(x) <= t(e) && t(e) - t(x) <= 600_000,
       );
       return click ? [click, e] : null;
     },

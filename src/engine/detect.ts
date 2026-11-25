@@ -75,7 +75,7 @@ export function relatedEvents(d: Detection, all: RiskEvent[]): RiskEvent[] {
   const keys = [d.event.host, d.event.user].filter(Boolean);
   const out = [...d.triggering];
   for (const x of w) {
-    if (ids.has(x.id)) continue;
+    if (ids.has(x.id) || x.meta?.baseline) continue;
     const near = Math.abs(new Date(x.ts).getTime() - new Date(d.event.ts).getTime()) <= 10 * 60 * 1000;
     const linked = byIp ? x.ip === d.event.ip : (x.host && keys.includes(x.host)) || (x.user && keys.includes(x.user));
     if (near && linked) {

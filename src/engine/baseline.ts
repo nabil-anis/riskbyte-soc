@@ -27,22 +27,23 @@ const PROCS = ['chrome.exe', 'outlook.exe', 'teams.exe', 'code.exe', 'excel.exe'
 function one(org: ClientId, ts: string): Partial<RiskEvent> {
   const host = pick(HOSTS[org] ?? GENERIC_HOSTS);
   const user = pick(USERS[org] ?? GENERIC_USERS);
-  const base = { client: org, ts, origin: 'ingest-api' as const };
+  const base = { client: org, ts, origin: 'ingest-api' as const, meta: { baseline: true } as Record<string, string | number | boolean> };
   switch (n(0, 7)) {
     case 0: return { ...base, source: 'web', host, user, ip: internalIp(), action: 'login_success', message: `Login for ${user}` };
     case 1: return { ...base, source: 'gateway', host, action: 'dns_query', domain: pick(DOMAINS), message: 'DNS lookup' };
     case 2: { const p = pick(PROCS); return { ...base, source: 'endpoint', host, user, process: p, action: 'process_start', message: `${p} started` }; }
     case 3: return { ...base, source: 'syslog', host, user, ip: internalIp(), action: 'login_success', message: `sshd: Accepted publickey for ${user}` };
-    case 4: return { ...base, source: 'vpn', host: 'vpn-gw-01', user, ip: internalIp(), meta: { geo: 'Baseline (Pakistan)' }, action: 'login_success', message: 'VPN session established' };
+    case 4: return { ...base, source: 'vpn', host: 'vpn-gw-01', user, ip: internalIp(), meta: { geo: 'Baseline (Pakistan)', baseline: true }, action: 'login_success', message: 'VPN session established' };
     case 5: return { ...base, source: 'web', host, user, ip: internalIp(), action: 'login_failed', message: `Failed login for ${user} (typo)` };
     case 6: return { ...base, source: 'endpoint', host, user, action: 'file_write', message: `Saved document (${n(12, 900)} KB)` };
     default: return org === 'meezan'
-      ? { ...base, source: 'payments', host: 'raast-gw-01', user: 'ops.batch', ip: internalIp(), action: 'transfer', meta: { amount: n(500, 40000), hour: n(9, 17) }, message: 'Routine customer transfer' }
+      ? { ...base, source: 'payments', host: 'raast-gw-01', user: 'ops.batch', ip: internalIp(), action: 'transfer', meta: { amount: n(500, 40000), hour: n(9, 17), baseline: true }, message: 'Routine customer transfer' }
       : { ...base, source: 'gateway', host, action: 'net_connect', ip: internalIp(), message: 'Internal service connection' };
   }
 }
 
 export function baselineBatch(orgs: Org[], count = n(2, 6), now = Date.now()): Partial<RiskEvent>[] {
-  if (!orgs.length) return [];
-  return Array.from({ length: count }, (_, i) => one(pick(orgs).id, new Date(now - (count - i) * 300).toISOString()));
+  const simulated = orgs.filter((o) => !o.platform);
+  if (!simulated.length) return [];
+  return Array.from({ length: count }, (_, i) => one(pick(simulated).id, new Date(now - (count - i) * 300).toISOString()));
 }

@@ -74,7 +74,7 @@ function AttackCard({ a, disabled, onPick }: { a: AttackDef; disabled: boolean; 
 
 function LaunchModal({ type, onClose }: { type: AttackType; onClose: () => void }) {
   const a = attackById(type);
-  const orgs = useStore((s) => s.data.orgs);
+  const orgs = useStore((s) => s.data.orgs.filter((o) => !o.platform));
   const launch = useStore((s) => s.launchAttack);
   const cancel = useStore((s) => s.cancelLaunch);
   const enter = useStore((s) => s.enter);

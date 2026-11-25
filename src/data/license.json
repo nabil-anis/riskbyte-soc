@@ -1,0 +1,24 @@
+{
+  "license": {
+    "licensee": "Riskbyte · Muhammad Nabil (F23CSC009)",
+    "tier": "Enterprise",
+    "hostQuota": 25,
+    "orgQuota": 10,
+    "issuedAt": "2026-11-25T00:00:00.000Z",
+    "expiresAt": "2027-11-25T00:00:00.000Z",
+    "features": [
+      "detection",
+      "ai-triage",
+      "containment",
+      "audit-ledger",
+      "threat-intel"
+    ]
+  },
+  "signature": "eDHcxTNCzPmocDT2EIkejIV3fy8CqWLNgENpFPA1+afJvppi4zO9okl8bVVZ7teqik3fQzTd50lVWnr2pyzIJg==",
+  "publicKey": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "kppacRfANAkxJotef8mI48zjg6vlp8kZdcAsIT8NHno",
+    "y": "UWhyy0j2A1x-A9ZkKH1ipaK9-iIGFexfJCZqY6CtrSA"
+  }
+}

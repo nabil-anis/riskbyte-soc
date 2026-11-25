@@ -2,15 +2,15 @@ import { useEffect, useState } from 'react';
 import { useStore, aiMode } from '../store/store';
 import type { Action, Rule } from '../engine/types';
 import { RULES } from '../data/rules';
-import { INDICATORS } from '../data/indicators';
 import { ACTION_LABEL, ACTION_PLAIN, LIMITATIONS } from '../data/copy';
 import { ENV_KEY, storageBytes } from '../store/persist';
 import { testConnection } from '../engine/gemini';
-import { LICENSE, licenseStatus } from '../engine/license';
 import { ROUTES } from '../engine/api';
 import { TOKENS } from '../engine/auth';
 import { Button, ClientBadge, ConfirmModal, Modal, SeverityBadge, copy, fmtDateTime } from '../components/ui';
 import { Bars } from './Analyst';
+import { Access, Containment, Intel as LiveIntel, LicenseCard } from './AdminExtra';
+import { REAL_VS_SIM } from '../data/copy';
 
 export default function AdminWorkspace() {
   const view = useStore((s) => s.view);
@@ -18,7 +18,9 @@ export default function AdminWorkspace() {
     case 'orgs': return <Orgs />;
     case 'agent': return <AgentSettings />;
     case 'rules': return <Rules />;
-    case 'intel': return <Intel />;
+    case 'intel': return <LiveIntel />;
+    case 'containment': return <Containment />;
+    case 'access': return <Access />;
     case 'ledger': return <Ledger />;
     case 'system': return <System />;
     default: return <Overview />;
@@ -248,28 +250,6 @@ function Rules() {
   );
 }
 
-function Intel() {
-  const alerts = useStore((s) => s.data.alerts);
-  return (
-    <section className="panel">
-      <div className="panel-head"><h3>Indicators</h3><div className="right"><span className="pill chip">{INDICATORS.length}</span></div></div>
-      <div className="table-wrap">
-        <table className="tbl">
-          <caption className="sr-only">Threat intelligence indicators</caption>
-          <thead><tr><th>Indicator</th><th>Type</th><th>Category</th><th>Confidence</th><th>Sightings</th><th>Note</th></tr></thead>
-          <tbody>{INDICATORS.map((i) => (
-            <tr key={i.value}>
-              <td className="mono nowrap">{i.value}</td><td>{i.type}</td><td>{i.category}</td><td>{Math.round(i.confidence * 100)}%</td>
-              <td>{alerts.filter((a) => a.intelHits.some((h) => h.value === i.value)).length}</td><td className="small">{i.note}</td>
-            </tr>
-          ))}</tbody>
-        </table>
-      </div>
-      <div className="panel-body small muted">IP indicators use RFC 5737 documentation ranges; 1.2.3.4 is a common placeholder used as a stand-in.</div>
-    </section>
-  );
-}
-
 function Ledger() {
   const blocks = useStore((s) => s.data.audit);
   const audit = useStore((s) => s.audit);
@@ -342,23 +322,14 @@ function System() {
   const resetData = useStore((s) => s.resetData);
   const clearAllData = useStore((s) => s.clearAllData);
   const [confirm, setConfirm] = useState<'reset' | 'wipe' | null>(null);
-  const st = licenseStatus();
   return (
     <>
       <div className="cols-2e">
-        <section className="panel">
-          <div className="panel-head"><h3>License</h3><div className="right"><span className={`pill ${st.valid ? 'st-executed' : 'sev-CRITICAL'}`}>{st.valid ? 'Valid' : 'Expired'}</span></div></div>
-          <div className="panel-body stack">
-            {[['Tier', LICENSE.tier], ['Host quota', `${LICENSE.hostQuota} hosts`], ['Days remaining', `${st.daysRemaining}`], ['Signature', LICENSE.signature]].map(([k, v]) => (
-              <div key={k} className="row between" style={{ borderBottom: '1px solid var(--line)', paddingBottom: 8 }}><span className="muted">{k}</span><b>{v}</b></div>
-            ))}
-            <p className="small muted">Development license; the signature is a demonstration value.</p>
-          </div>
-        </section>
+        <LicenseCard />
         <section className="panel">
           <div className="panel-head"><h3>Storage</h3></div>
           <div className="panel-body stack">
-            {[['Backend', 'Browser localStorage'], ['Used', `${(storageBytes() / 1024).toFixed(1)} KB`], ['Events retained', `${data.events.length} / 2000`], ['Alerts', `${data.alerts.length}`], ['Incidents', `${data.cases.length}`], ['Ledger blocks', `${data.audit.length}`]].map(([k, v]) => (
+            {[['Backend', 'localStorage + Cache Storage mirror'], ['Used', `${(storageBytes() / 1024).toFixed(1)} KB`], ['Events retained', `${data.events.length} / 2000`], ['Alerts', `${data.alerts.length}`], ['Incidents', `${data.cases.length}`], ['Ledger blocks', `${data.audit.length}`]].map(([k, v]) => (
               <div key={k} className="row between" style={{ borderBottom: '1px solid var(--line)', paddingBottom: 8 }}><span className="muted">{k}</span><b>{v}</b></div>
             ))}
           </div>
@@ -373,6 +344,16 @@ function System() {
             <tbody>{ROUTES.map((r) => (
               <tr key={r.method + r.pattern}><td className="mono">{r.method} {r.pattern}</td>{(['ingest', 'analyst', 'admin'] as const).map((role) => <td key={role}>{r.roles.includes(role) ? '✓' : <span className="muted">403</span>}</td>)}</tr>
             ))}</tbody>
+          </table>
+        </div>
+      </section>
+      <section className="panel">
+        <div className="panel-head"><h3>What is real and what is simulated</h3></div>
+        <div className="table-wrap">
+          <table className="tbl">
+            <caption className="sr-only">Real versus simulated</caption>
+            <thead><tr><th>Area</th><th>Real</th><th>Simulated</th></tr></thead>
+            <tbody>{REAL_VS_SIM.map((r) => <tr key={r.feature}><td><b>{r.feature}</b></td><td className="small">{r.real}</td><td className={`small ${r.sim === 'None' ? 'muted' : ''}`}>{r.sim}</td></tr>)}</tbody>
           </table>
         </div>
       </section>

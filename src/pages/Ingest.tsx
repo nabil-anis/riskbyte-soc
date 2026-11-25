@@ -7,11 +7,12 @@ import { Console } from '../components/Console';
 import { Bars } from './Analyst';
 import { LiveLog } from '../components/Live';
 import { LogViewer } from '../components/LogViewer';
+import { LogUpload } from '../components/LogUpload';
 
 export default function IngestWorkspace() {
   const view = useStore((s) => s.view);
   if (view === 'stream') return <Stream />;
-  if (view === 'send') return <Send />;
+  if (view === 'send') return <><LogUpload /><Send /></>;
   if (view === 'console') return <Console />;
   if (view === 'logs') return <LogViewer />;
   return <Sources />;

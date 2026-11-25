@@ -4,13 +4,16 @@ import { classifyLog } from '../engine/types';
 import { USERNAMES } from '../engine/auth';
 import { Engine, emptyData } from '../engine/engineState';
 import { request, type ApiResponse, type Method, type RequestOptions } from '../engine/api';
-import { TOKENS, actorFor } from '../engine/auth';
+import { TOKENS } from '../engine/auth';
 import { RULES } from '../data/rules';
 import { INDICATORS } from '../data/indicators';
 import { getOrgs } from '../data/clients';
 import { ATTACKS, attackById, defaultTarget, generate, type AttackType } from '../engine/generators';
 import { baselineBatch } from '../engine/baseline';
 import { serverGeminiConfigured } from '../engine/gemini';
+import { setLiveIntel } from '../engine/intel';
+import type { Indicator } from '../engine/types';
+import { MAX_FAILED, LOCK_MS, hashPassword, loadAccounts, loadSessions, newSession, passwordProblem, saveAccounts, saveSessions, verifyPassword, type Account, type Session } from '../engine/accounts';
 import { ENV_KEY, KEYS, clearAll, loadData, loadLogs, loadSettings, loadWorkspace, write, type Settings, type Workspace } from './persist';
 
 export type { Workspace };
@@ -25,6 +28,8 @@ export const VIEWS: Record<Workspace, { id: string; label: string; icon: string 
   admin: [
     { id: 'overview', label: 'Overview', icon: '◎' },
     { id: 'orgs', label: 'Organizations', icon: '▦' },
+    { id: 'containment', label: 'Containment', icon: '⛨' },
+    { id: 'access', label: 'Access', icon: '⚿' },
     { id: 'agent', label: 'AI agent & policy', icon: '✦' },
     { id: 'rules', label: 'Detection rules', icon: '☰' },
     { id: 'intel', label: 'Threat intel', icon: '⊘' },
@@ -82,11 +87,29 @@ interface State {
   bootedAt: number;
   /** whether the server-side proxy has GEMINI_API_KEY configured */
   serverAi: 'checking' | 'available' | 'unavailable';
-  monitor: { lastScanAt: number | null; scans: number; lastRejectAt: number | null };
+  monitor: { lastScanAt: number | null; scans: number; lastRejectAt: number | null; since: string; lastGap: { from: string; to: string } | null };
+  accounts: Partial<Record<Role, Account>>;
+  sessions: Partial<Record<Role, Session>>;
+  authPrompt: { ws: Workspace; view?: string } | null;
+  client: ClientInfo | null;
+  intel: IntelInfo;
 }
+
+export interface ClientInfo { ip: string; country?: string; region?: string; city?: string; userAgent?: string; source: string }
+export interface IntelInfo { fetchedAt?: string; count: number; sources: { name: string; ok: boolean; count: number; error?: string; url?: string }[]; status: 'loading' | 'live' | 'cached' | 'offline' }
+export type AuthResult = { ok: true } | { ok: false; error: string; needReset?: boolean };
 
 interface Actions {
   enter: (w: Workspace, view?: string) => void;
+  createAccount: (role: Role, username: string, password: string) => Promise<AuthResult>;
+  login: (role: Role, username: string, password: string) => Promise<AuthResult>;
+  completeReset: (role: Role, username: string, oldPw: string, newPw: string) => Promise<AuthResult>;
+  signOut: () => Promise<void>;
+  deleteAccount: (role: Role) => Promise<void>;
+  actor: () => string;
+  emitPlatform: (e: { action: string; user?: string; message: string; meta?: Record<string, string | number | boolean> }) => Promise<void>;
+  refreshIntel: () => Promise<void>;
+  releaseControl: (id: string) => Promise<void>;
   leave: () => void;
   go: (view: string, extra?: Partial<State>) => void;
   log: (level: LogLevel, text: string, src?: LogSource) => void;
@@ -127,6 +150,20 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const initialSettings = loadSettings();
 const loaded = typeof localStorage !== 'undefined' ? loadData() : { migrated: false };
 const initialWs = loadWorkspace();
+const INTEL_KEY = 'riskbyte.intel.v1';
+const MONITOR_KEY = 'riskbyte.monitor.v1';
+const DATA_CACHE = 'riskbyte-data-v1';
+const CACHE_URL = '/__riskbyte__/state.json';
+interface MonitorMeta { firstStartedAt: string; lastBeatAt?: string }
+const initialMonitor: MonitorMeta = (() => {
+  try {
+    const m = JSON.parse(localStorage.getItem(MONITOR_KEY) || 'null') as MonitorMeta | null;
+    return m?.firstStartedAt ? m : { firstStartedAt: new Date().toISOString() };
+  } catch {
+    return { firstStartedAt: new Date().toISOString() };
+  }
+})();
+const previousBeat = initialMonitor.lastBeatAt;
 const initialLogs: LogLine[] = typeof localStorage !== 'undefined' ? loadLogs<LogLine>().slice(-800) : [];
 logSeq = initialLogs.reduce((m, l) => Math.max(m, l.id), 0);
 let logPersistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -192,11 +229,174 @@ export const useStore: UseBoundStore<StoreApi<Store>> = create<Store>()((set, ge
   continuous: { on: false, nextAt: null },
   bootedAt: Date.now(),
   serverAi: 'checking',
-  monitor: { lastScanAt: null, scans: 0, lastRejectAt: null },
+  monitor: { lastScanAt: null, scans: 0, lastRejectAt: null, since: initialMonitor.firstStartedAt, lastGap: null },
+  accounts: typeof localStorage !== 'undefined' ? loadAccounts() : {},
+  sessions: typeof localStorage !== 'undefined' ? loadSessions() : {},
+  authPrompt: null,
+  client: null,
+  intel: { count: 0, sources: [], status: 'loading' },
 
   set: (p) => set(p),
 
+  actor: () => {
+    const ws = get().workspace;
+    if (!ws) return 'visitor';
+    if (ws === 'demo') return 'simulator:operator';
+    const role = WORKSPACE_ROLE[ws];
+    return `${role}:${get().sessions[role]?.username ?? USERNAMES[role]}`;
+  },
+
+  emitPlatform: async (e) => {
+    const c = get().client;
+    const ev = {
+      client: 'riskbyte', source: 'web', host: 'riskbyte-console', user: e.user, ip: c?.ip && c.ip !== 'unknown' ? c.ip : undefined,
+      action: e.action, message: e.message,
+      meta: { ...(c?.country ? { geo: [c.city, c.region, c.country].filter(Boolean).join(', ') } : {}), ...(c?.userAgent ? { ua: c.userAgent.slice(0, 120) } : {}), ...(e.meta ?? {}) },
+      ts: new Date().toISOString(),
+    };
+    await request(apiCtx, 'POST', '/api/ingest', { token: TOKENS.ingest, body: { events: [ev] }, origin: 'ingest-api', actor: 'system:console' });
+  },
+
+  createAccount: async (role, username, password) => {
+    const uname = username.trim().toLowerCase();
+    if (!/^[a-z0-9._-]{3,32}$/.test(uname)) return { ok: false, error: 'Username: 3-32 characters (letters, digits, . _ -)' };
+    const prob = passwordProblem(password);
+    if (prob) return { ok: false, error: prob };
+    if (get().accounts[role]) return { ok: false, error: 'An account already exists for this tier' };
+    const now = new Date().toISOString();
+    const acc: Account = { role, username: uname, ...(await hashPassword(password)), createdAt: now, passwordChangedAt: now, failed: 0, lastLoginAt: now, lastLoginIp: get().client?.ip };
+    const accounts = { ...get().accounts, [role]: acc };
+    saveAccounts(accounts);
+    set({ accounts });
+    await engine.record('auth.account_created', `${role} account "${uname}" created (${acc.algo}, ${acc.iterations} iterations) from ${get().client?.ip ?? 'unknown'}`, `${role}:${uname}`);
+    await get().emitPlatform({ action: 'login_success', user: uname, message: `Account created and signed in to ${role} console`, meta: { role } });
+    return startSession(role, uname);
+  },
+
+  login: async (role, username, password) => {
+    const acc = get().accounts[role];
+    if (!acc) return { ok: false, error: 'No account exists for this tier yet' };
+    const now = Date.now();
+    if (acc.lockedUntil && acc.lockedUntil > now) return { ok: false, error: `Account locked after ${MAX_FAILED} failed attempts. Try again in ${Math.ceil((acc.lockedUntil - now) / 1000)}s.` };
+    const uname = username.trim().toLowerCase();
+    const good = uname === acc.username && (await verifyPassword(acc, password));
+    const ip = get().client?.ip ?? 'unknown';
+    await get().emitPlatform({ action: good ? 'login_success' : 'login_failed', user: uname || '(blank)', message: good ? `Signed in to ${role} console` : `Failed sign-in to ${role} console`, meta: { role } });
+    if (!good) {
+      const failed = acc.failed + 1;
+      const locked = failed >= MAX_FAILED;
+      const next: Account = { ...acc, failed: locked ? 0 : failed, lockedUntil: locked ? now + LOCK_MS : acc.lockedUntil };
+      const accounts = { ...get().accounts, [role]: next };
+      saveAccounts(accounts);
+      set({ accounts });
+      get().track('failed sign-in', `${role} as "${uname}" from ${ip}`);
+      if (locked) await engine.record('auth.lockout', `${role} account locked for ${LOCK_MS / 1000}s after ${MAX_FAILED} failed attempts from ${ip}`, 'system:auth');
+      return { ok: false, error: locked ? `Too many failed attempts. Account locked for ${LOCK_MS / 1000}s.` : `Wrong username or password (${MAX_FAILED - failed} attempt${MAX_FAILED - failed === 1 ? '' : 's'} left before lockout)` };
+    }
+    if (engine.isControlled('disable_user', uname)) {
+      await engine.record('auth.denied', `${role}:${uname} sign-in denied: account disabled by containment`, 'system:auth');
+      return { ok: false, error: 'This account is disabled by a containment action. An administrator can release it under Containment.' };
+    }
+    if (ip !== 'unknown' && engine.isControlled('block_ip', ip)) {
+      if (role !== 'admin') {
+        await engine.record('auth.denied', `${role}:${uname} sign-in denied: source ${ip} is blocklisted`, 'system:auth');
+        return { ok: false, error: `Your address ${ip} is on the blocklist. Sign in as Administrator to release it.` };
+      }
+      get().log('WARN', `riskbyte  break-glass: administrator signed in from blocklisted ${ip}`);
+      await engine.record('auth.breakglass', `admin:${uname} signed in from blocklisted ${ip} (break-glass)`, 'system:auth');
+    }
+    const accounts = { ...get().accounts, [role]: { ...acc, failed: 0, lockedUntil: undefined, lastLoginAt: new Date().toISOString(), lastLoginIp: ip } };
+    saveAccounts(accounts);
+    set({ accounts });
+    if (engine.isControlled('reset_password', uname)) return { ok: false, needReset: true, error: 'A containment action requires you to set a new password before signing in.' };
+    await engine.record('auth.login', `${role}:${uname} signed in from ${ip}${get().client?.country ? ` (${get().client?.country})` : ''}`, `${role}:${uname}`);
+    return startSession(role, uname);
+  },
+
+  completeReset: async (role, username, oldPw, newPw) => {
+    const acc = get().accounts[role];
+    const uname = username.trim().toLowerCase();
+    if (!acc || uname !== acc.username || !(await verifyPassword(acc, oldPw))) return { ok: false, error: 'Current password is wrong' };
+    const prob = passwordProblem(newPw);
+    if (prob) return { ok: false, error: prob };
+    if (newPw === oldPw) return { ok: false, error: 'Choose a different password' };
+    const next: Account = { ...acc, ...(await hashPassword(newPw)), passwordChangedAt: new Date().toISOString(), failed: 0 };
+    const accounts = { ...get().accounts, [role]: next };
+    saveAccounts(accounts);
+    set({ accounts });
+    for (const c of (engine.data.controls ?? []).filter((x) => x.kind === 'reset_password' && x.value === uname)) await engine.releaseControl(c.id, `${role}:${uname}`);
+    await engine.record('auth.password_changed', `${role}:${uname} changed password (credential reset completed)`, `${role}:${uname}`);
+    await get().emitPlatform({ action: 'password_changed', user: uname, message: 'Password changed after enforced reset', meta: { role } });
+    return startSession(role, uname);
+  },
+
+  signOut: async () => {
+    const ws = get().workspace;
+    if (ws && ws !== 'demo') {
+      const role = WORKSPACE_ROLE[ws];
+      const s = get().sessions[role];
+      if (s) {
+        const sessions = { ...get().sessions };
+        delete sessions[role];
+        saveSessions(sessions);
+        set({ sessions });
+        await engine.record('auth.logout', `${role}:${s.username} signed out`, `${role}:${s.username}`);
+        await get().emitPlatform({ action: 'logout', user: s.username, message: `Signed out of ${role} console`, meta: { role } });
+      }
+    }
+    get().leave();
+  },
+
+  deleteAccount: async (role) => {
+    const acc = get().accounts[role];
+    if (!acc) return;
+    const accounts = { ...get().accounts };
+    delete accounts[role];
+    const sessions = { ...get().sessions };
+    delete sessions[role];
+    saveAccounts(accounts);
+    saveSessions(sessions);
+    set({ accounts, sessions });
+    await engine.record('auth.account_deleted', `${role} account "${acc.username}" deleted (recovery) from ${get().client?.ip ?? 'unknown'}`, 'system:auth');
+    get().toast(`${role} account deleted. Create a new one to continue.`);
+  },
+
+  releaseControl: async (id) => {
+    get().track('released containment', id);
+    await engine.releaseControl(id, get().actor());
+    get().toast('Containment released', 'ok');
+  },
+
+  refreshIntel: async () => {
+    try {
+      const c = new AbortController();
+      const t = setTimeout(() => c.abort(), 15000);
+      const res = await fetch('/api/intel', { signal: c.signal });
+      clearTimeout(t);
+      if (!res.ok || !(res.headers.get('content-type') ?? '').includes('json')) throw new Error(`HTTP ${res.status}`);
+      const j = (await res.json()) as { fetchedAt: string; sources: IntelInfo['sources']; indicators: Indicator[] };
+      if (!j.indicators?.length && j.sources?.every((x) => !x.ok)) throw new Error('all feeds failed');
+      setLiveIntel(j.indicators, { fetchedAt: j.fetchedAt, sources: j.sources });
+      write(INTEL_KEY, j);
+      set({ intel: { fetchedAt: j.fetchedAt, sources: j.sources, count: j.indicators.length, status: 'live' } });
+      get().log('OK', `riskbyte  threat intel refreshed: ${j.sources.map((x) => `${x.name} ${x.ok ? x.count : 'failed'}`).join(', ')}`);
+    } catch (e) {
+      const st = get().intel;
+      set({ intel: { ...st, status: st.count ? 'cached' : 'offline' } });
+      get().log('WARN', `riskbyte  threat intel feeds unreachable (${(e as Error).message}); using ${st.count ? 'cached feed data' : 'local list only'}`);
+    }
+  },
+
   enter: (w, view) => {
+    if (w !== 'demo') {
+      const role = WORKSPACE_ROLE[w];
+      const s = get().sessions[role];
+      if (!s || s.expiresAt <= Date.now()) {
+        set({ authPrompt: { ws: w, view } });
+        get().track('sign-in required', WORKSPACE_LABEL[w]);
+        return;
+      }
+    }
     write(KEYS.session, { workspace: w });
     set({ workspace: w, view: view ?? VIEWS[w][0].id });
     get().track('opened workspace', `${WORKSPACE_LABEL[w]} → ${view ?? VIEWS[w][0].id}`);
@@ -205,7 +405,7 @@ export const useStore: UseBoundStore<StoreApi<Store>> = create<Store>()((set, ge
   leave: () => {
     get().track('left workspace', get().workspace ? WORKSPACE_LABEL[get().workspace!] : '');
     try { localStorage.removeItem(KEYS.session); } catch { /* ignore */ }
-    set({ workspace: null, view: '' });
+    set({ workspace: null, view: '', authPrompt: null });
   },
   go: (view, extra) => {
     if (view !== get().view) get().track('navigated', `${get().workspace}/${view}`);
@@ -218,8 +418,7 @@ export const useStore: UseBoundStore<StoreApi<Store>> = create<Store>()((set, ge
     scheduleLogPersist();
   },
   track: (action, detail) => {
-    const ws = get().workspace;
-    const actor = ws ? (ws === 'demo' ? 'simulator:operator' : `${WORKSPACE_ROLE[ws]}:${USERNAMES[WORKSPACE_ROLE[ws]]}`) : 'visitor';
+    const actor = get().actor();
     get().log('INFO', `user ${actor} ${action}${detail ? ` · ${detail}` : ''}`, 'user');
   },
   clearLogs: () => set({ logs: [] }),
@@ -233,7 +432,7 @@ export const useStore: UseBoundStore<StoreApi<Store>> = create<Store>()((set, ge
 
   api: async (method, path, opts = {}) => {
     const ws = get().workspace;
-    const res = await request(apiCtx, method, path, { ...opts, token: ws ? TOKENS[WORKSPACE_ROLE[ws]] : undefined });
+    const res = await request(apiCtx, method, path, { ...opts, actor: get().actor(), token: ws ? TOKENS[WORKSPACE_ROLE[ws]] : undefined });
     if ((res.status === 400 || res.status === 413) && path.startsWith('/api/ingest')) set((s) => ({ monitor: { ...s.monitor, lastRejectAt: Date.now() } }));
     if (res.status >= 400) {
       const b = res.body as { error?: string; detail?: string; problems?: string[]; route?: string; suggestion?: string };
@@ -318,7 +517,7 @@ export const useStore: UseBoundStore<StoreApi<Store>> = create<Store>()((set, ge
       contTimer = setTimeout(async () => {
         if (!get().continuous.on) return;
         const a = pool[Math.floor(Math.random() * pool.length)];
-        const orgs = getOrgs();
+        const orgs = getOrgs().filter((x) => !x.platform);
         const o = orgs[Math.floor(Math.random() * orgs.length)];
         if (!get().launches.some((l) => l.status === 'running')) await get().launchAttack(a.id, o.id, '', 3);
         if (get().continuous.on) schedule();
@@ -346,7 +545,7 @@ export const useStore: UseBoundStore<StoreApi<Store>> = create<Store>()((set, ge
   },
   repair: async () => {
     get().track('rebuilt audit chain');
-    await engine.repair(actorFor('admin'));
+    await engine.repair(get().actor());
     get().toast(get().audit.intact ? 'Ledger rebuilt. Hash chain intact.' : 'Repair failed', get().audit.intact ? 'ok' : 'error');
   },
   resetData: async () => {
@@ -362,18 +561,21 @@ export const useStore: UseBoundStore<StoreApi<Store>> = create<Store>()((set, ge
   addOrg: async (o) => {
     if (!o.name.trim()) return false;
     get().track('onboarded organization', o.name);
-    const org = await engine.addOrg(o, actorFor('admin'));
+    const org = await engine.addOrg(o, get().actor());
     get().toast(`${org.name} onboarded (id ${org.id})`, 'ok');
     return true;
   },
   removeOrg: async (id) => {
     get().track('offboarded organization', id);
-    const ok = await engine.removeOrg(id, actorFor('admin'));
+    const ok = await engine.removeOrg(id, get().actor());
     get().toast(ok ? 'Organization offboarded. History is kept.' : 'At least one organization is required', ok ? 'ok' : 'error');
   },
   clearAllData: () => {
     get().track('factory reset');
+    wiping = true;
     clearAll();
+    try { ['riskbyte.accounts.v1', 'riskbyte.sessions.v1', INTEL_KEY, MONITOR_KEY].forEach((k) => localStorage.removeItem(k)); } catch { /* ignore */ }
+    if (typeof caches !== 'undefined') caches.delete(DATA_CACHE).catch(() => undefined);
     window.location.hash = '';
     window.location.reload();
   },
@@ -390,8 +592,10 @@ const engine: Engine = new Engine(
     },
     policy: () => useStore.getState().settings.policy,
     onChange: (data, audit) => {
+      const prevControls = useStore.getState().data.controls?.length ?? 0;
       const prevAudit = useStore.getState().audit;
       useStore.setState({ data, audit });
+      if ((data.controls?.length ?? 0) !== prevControls) setTimeout(revalidateSessions, 0);
       if (prevAudit.intact && !audit.intact) useStore.getState().toast(`Ledger integrity failure at block #${audit.brokenAt}`, 'error');
       if (persistTimer) clearTimeout(persistTimer);
       persistTimer = setTimeout(() => {
@@ -446,9 +650,19 @@ export function startActivityTracking() {
 
 export async function bootstrap() {
   startActivityTracking();
+  installLifecycleHooks();
+  loadCachedIntel();
+  if (!loaded.data) await restoreFromCache();
   if (useStore.getState().logs.length) useStore.getState().log('INFO', `riskbyte  restored ${useStore.getState().logs.length} log lines from previous session`);
   try { localStorage.removeItem('riskbyte.state.v1'); localStorage.removeItem('riskbyte.checklist.v1'); localStorage.removeItem('riskbyte.engine.v1'); } catch { /* ignore */ }
   await engine.init();
+  if (previousBeat && Date.now() - Date.parse(previousBeat) > 90_000) {
+    const to = new Date().toISOString();
+    useStore.setState((s) => ({ monitor: { ...s.monitor, lastGap: { from: previousBeat, to } } }));
+    await engine.recordGap(previousBeat, to);
+  }
+  write(MONITOR_KEY, { firstStartedAt: initialMonitor.firstStartedAt, lastBeatAt: new Date().toISOString() });
+  await identifyClient();
   const serverOk = await serverGeminiConfigured();
   useStore.setState({ serverAi: serverOk ? 'available' : 'unavailable' });
   const st = useStore.getState();
@@ -467,6 +681,10 @@ export async function bootstrap() {
   ];
   for (const [l, t] of lines) st.log(l, t);
   startMonitoring();
+  useStore.getState().refreshIntel();
+  setInterval(() => useStore.getState().refreshIntel(), 3600_000);
+  revalidateSessions();
+  await useStore.getState().emitPlatform({ action: 'session_start', message: 'Console opened', meta: { since: initialMonitor.firstStartedAt } });
   if (loaded.migrated) setTimeout(() => useStore.getState().toast('Stored data was from an older version and was reset.'), 300);
 }
 
@@ -490,6 +708,8 @@ export function startMonitoring() {
         checkpointEvents += batch.length;
         checkpointAlerts += engine.data.alerts.length - before;
         useStore.setState((s) => ({ monitor: { ...s.monitor, lastScanAt: Date.now(), scans: s.monitor.scans + 1 } }));
+        write(MONITOR_KEY, { firstStartedAt: initialMonitor.firstStartedAt, lastBeatAt: new Date().toISOString() });
+        mirrorToCache();
       }
     }
     if (Date.now() - lastCheckpoint >= CHECKPOINT_MS) {
@@ -502,4 +722,115 @@ export function startMonitoring() {
     monitorTimer = setTimeout(tick, 2500 + Math.round(Math.random() * 1500));
   };
   monitorTimer = setTimeout(tick, 800);
+}
+
+// ---------------- sessions ----------------
+function startSession(role: Role, username: string): AuthResult {
+  const st = useStore.getState();
+  const sessions = { ...st.sessions, [role]: newSession(role, username) };
+  saveSessions(sessions);
+  const target = st.authPrompt;
+  useStore.setState({ sessions, authPrompt: null });
+  if (target) useStore.getState().enter(target.ws, target.view);
+  return { ok: true };
+}
+
+/** Ends sessions that a containment action now forbids (disabled account, blocklisted address). */
+function revalidateSessions() {
+  const st = useStore.getState();
+  const ip = st.client?.ip;
+  let changed = false;
+  const sessions = { ...st.sessions };
+  for (const role of Object.keys(sessions) as Role[]) {
+    const s = sessions[role]!;
+    const disabled = engine.isControlled('disable_user', s.username);
+    const blocked = !!ip && ip !== 'unknown' && role !== 'admin' && engine.isControlled('block_ip', ip);
+    if (disabled || blocked || s.expiresAt <= Date.now()) {
+      delete sessions[role];
+      changed = true;
+      st.log('WARN', `riskbyte  session ended for ${role}:${s.username} (${disabled ? 'account disabled by containment' : blocked ? `source ${ip} blocklisted` : 'expired'})`);
+    }
+  }
+  if (!changed) return;
+  saveSessions(sessions);
+  useStore.setState({ sessions });
+  const ws = st.workspace;
+  if (ws && ws !== 'demo' && !sessions[WORKSPACE_ROLE[ws]]) {
+    useStore.getState().leave();
+    useStore.getState().toast('Your session was ended by a containment action or expired.', 'error');
+  }
+}
+
+// ---------------- durable storage ----------------
+/** Writes everything to localStorage immediately and mirrors the platform data into Cache Storage. */
+let wiping = false;
+export function flushNow() {
+  if (wiping) return;
+  const st = useStore.getState();
+  write(KEYS.state, st.data);
+  write(KEYS.logs, st.logs.slice(-800));
+  write(MONITOR_KEY, { firstStartedAt: st.monitor.since, lastBeatAt: new Date().toISOString() } satisfies MonitorMeta);
+  mirrorToCache();
+}
+
+let lastMirror = 0;
+function mirrorToCache(force = false) {
+  if (typeof caches === 'undefined') return;
+  if (!force && Date.now() - lastMirror < 15_000) return;
+  lastMirror = Date.now();
+  const body = JSON.stringify({ savedAt: new Date().toISOString(), data: useStore.getState().data });
+  caches.open(DATA_CACHE).then((c) => c.put(CACHE_URL, new Response(body, { headers: { 'Content-Type': 'application/json' } }))).catch(() => undefined);
+}
+
+async function restoreFromCache(): Promise<boolean> {
+  if (typeof caches === 'undefined') return false;
+  try {
+    const c = await caches.open(DATA_CACHE);
+    const r = await c.match(CACHE_URL);
+    if (!r) return false;
+    const j = (await r.json()) as { savedAt: string; data: EngineData };
+    if (j?.data?.version !== 2) return false;
+    await engine.load(j.data);
+    useStore.getState().log('OK', `riskbyte  restored platform data from Cache Storage (saved ${j.savedAt})`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function installLifecycleHooks() {
+  if (typeof window === 'undefined') return;
+  window.addEventListener('pagehide', flushNow);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushNow(); });
+  window.addEventListener('beforeunload', flushNow);
+  // Real client telemetry about this console.
+  window.addEventListener('online', () => useStore.getState().emitPlatform({ action: 'network_online', message: 'Console regained network connectivity' }));
+  window.addEventListener('offline', () => useStore.getState().emitPlatform({ action: 'network_offline', message: 'Console lost network connectivity' }));
+  window.addEventListener('error', (e) => useStore.getState().emitPlatform({ action: 'client_error', message: `Uncaught error: ${String(e.message).slice(0, 200)}` }));
+  window.addEventListener('unhandledrejection', (e) => useStore.getState().emitPlatform({ action: 'client_error', message: `Unhandled rejection: ${String((e as PromiseRejectionEvent).reason).slice(0, 200)}` }));
+}
+
+async function identifyClient() {
+  try {
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), 4000);
+    const res = await fetch('/api/whoami', { signal: c.signal });
+    clearTimeout(t);
+    if (!res.ok || !(res.headers.get('content-type') ?? '').includes('json')) throw new Error();
+    const j = (await res.json()) as ClientInfo;
+    useStore.setState({ client: { ...j, userAgent: j.userAgent ?? navigator.userAgent } });
+  } catch {
+    useStore.setState({ client: { ip: 'unknown', userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined, source: 'unavailable' } });
+  }
+  const c = useStore.getState().client!;
+  useStore.getState().log('INFO', `riskbyte  console session from ${c.ip}${c.city || c.country ? ` (${[c.city, c.country].filter(Boolean).join(', ')})` : ''}`);
+}
+
+function loadCachedIntel() {
+  try {
+    const j = JSON.parse(localStorage.getItem(INTEL_KEY) || 'null') as { fetchedAt: string; sources: IntelInfo['sources']; indicators: Indicator[] } | null;
+    if (!j?.indicators) return;
+    setLiveIntel(j.indicators, { fetchedAt: j.fetchedAt, sources: j.sources });
+    useStore.setState({ intel: { fetchedAt: j.fetchedAt, sources: j.sources, count: j.indicators.length, status: 'cached' } });
+  } catch { /* ignore */ }
 }

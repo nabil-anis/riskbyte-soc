@@ -56,7 +56,7 @@ export function DecisionBox({ alert, canDecide }: { alert: Alert; canDecide: boo
         <div className="row">
           <StatusBadge status={alert.status} />
           <span>
-            {alert.outcome.kind === 'approved' ? <>Containment <code>{alert.proposed.action} {alert.proposed.target}</code> executed (dry-run)</> : 'Dismissed, no action taken'}
+            {alert.outcome.kind === 'approved' ? <>Containment <code>{alert.proposed.action} {alert.proposed.target}</code> is enforced</> : 'Dismissed, no action taken'}
             {' '}by <b>{alert.outcome.by}</b> · {fmtDateTime(alert.outcome.at)}
           </span>
         </div>
@@ -70,13 +70,23 @@ export function DecisionBox({ alert, canDecide }: { alert: Alert; canDecide: boo
       <div>
         <span className="proposal">{alert.proposed.action} {alert.proposed.target}</span>
       </div>
-      <p className="small muted">This will {ACTION_PLAIN[alert.proposed.action]}. Execution is dry-run: no real device or firewall is changed.</p>
+      <SelfTargetWarning target={alert.proposed.target} />
+      <p className="small muted">This will {ACTION_PLAIN[alert.proposed.action]}. Riskbyte enforces it on all later telemetry and console sign-ins; it can be released from Administrator → Containment.</p>
       <div className="row">
         <Button onClick={() => go('approve')} busy={busy === 'approve'} disabledReason={!canDecide ? 'Only analysts and administrators can approve' : !alert.triage ? 'Wait for AI triage to finish' : null}>Approve &amp; execute</Button>
         <Button variant="neutral" onClick={() => go('dismiss')} busy={busy === 'dismiss'} disabledReason={!canDecide ? 'Only analysts and administrators can dismiss' : null}>Dismiss</Button>
       </div>
     </div>
   );
+}
+
+function SelfTargetWarning({ target }: { target: string }) {
+  const ip = useStore((s) => s.client?.ip);
+  const users = useStore((s) => Object.values(s.accounts).map((a) => a?.username));
+  const t = target.toLowerCase();
+  if (t === ip) return <div className="banner bad small">This is <b>your own address</b>. Approving blocks this browser from the analyst and ingestion consoles (Administrator can still sign in and release it).</div>;
+  if (users.includes(t)) return <div className="banner bad small">This is a <b>real console account</b>. Approving takes effect on its next sign-in and ends its current session.</div>;
+  return null;
 }
 
 export function AlertDetail({ alert, canDecide }: { alert: Alert; canDecide: boolean }) {
