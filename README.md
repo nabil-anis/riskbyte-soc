@@ -42,24 +42,33 @@ npm run dev
 
 Open the URL Vite prints (usually http://localhost:5173).
 
-Other scripts: `npm test` (Vitest, 51 tests), `npm run build` (type-check + production build into `dist/`), `npm run preview` (serve the build).
+Other scripts: `npm test` (Vitest, 55 tests), `npm run build` (type-check + production build into `dist/`), `npm run preview` (serve the build).
 
 ## Deploy to Vercel
 
 1. Go to vercel.com → **Add New… → Project** → **Import** the `riskbyte` GitHub repository.
 2. Framework preset: **Vite** (detected from `vercel.json`). Build command `npm run build`, output directory `dist`.
-3. **No environment variables are required.**
+3. Optional: add `GEMINI_API_KEY` under Environment Variables for Gemini-powered triage. Without it, the agent uses the local heuristic model.
 4. Click **Deploy** and open the generated link. It lands on the workspace picker. Refreshing any page (`#analyst/alerts`, `#admin/orgs`, …) works because the location lives in the URL hash and `vercel.json` rewrites every path to `index.html`.
 
-## Adding your Gemini API key
+## Gemini API key
 
-1. Get a key from Google AI Studio.
-2. Open **Administrator → AI agent & policy**, paste the key, keep the model `gemini-2.5-flash` (or try another name if you get a 404), click **Test Connection**, then **Save**.
-3. New alerts are now triaged by Gemini. The triage card shows `gemini · <model>`; if the call fails it shows `heuristic (Gemini unavailable: <reason>)`.
+**Recommended: server-side key.** In Vercel → Project → Settings → Environment Variables, add `GEMINI_API_KEY` (all environments) and redeploy. The agent then calls Gemini through the serverless function `api/gemini.ts`, which adds the key on the server. The key is never sent to browsers, and the endpoint only accepts the app's fixed triage and ping request shapes. Locally, put `GEMINI_API_KEY=...` in `.env.local` (gitignored); the Vite dev server serves the same `/api/gemini` route.
 
-The key is stored only in your browser's localStorage. It is never logged, printed in the terminal, or committed. An optional `VITE_GEMINI_API_KEY` build variable is supported as a default, but **`VITE_` variables are public inside the built JavaScript bundle**, so prefer the Settings field.
+Check it in **Administrator → AI agent & policy**: it shows *Server key (GEMINI_API_KEY): configured ✓*, and **Test connection** pings Gemini through the server. Every triaged alert shows `gemini · <model>`, or `heuristic (Gemini unavailable: <reason>)` if a call fails (timeout 12 s, rate limit, etc.).
 
-Before anything is sent to Gemini, IPs, usernames, hostnames and the organisation name are replaced with tokens like `[REDACTED_IP_1]`; the tokens are swapped back locally for display.
+Optional: a browser-side key can be pasted on the same page as an override (stored in localStorage). `VITE_GEMINI_API_KEY` is also supported but is **public** inside the built bundle, so prefer `GEMINI_API_KEY`.
+
+Before evidence leaves the browser, IPs, usernames, hostnames and the organization name are replaced with tokens like `[REDACTED_IP_1]` and mapped back locally.
+
+## 24/7 monitoring, escalation and logs
+
+- **Continuous detection**: while the app is open, baseline telemetry from every organization (logins, DNS, processes, VPN sessions, routine payments) flows into the pipeline every few seconds and is scanned against all 10 rules. Each scan writes one log line. Every 5 minutes a `monitoring.checkpoint` block goes into the audit ledger.
+- **Tiers wake up only when something is wrong**: the landing page shows *All clear* or *Attention required*. Each tier card shows **STANDBY** or **ACTIVE**, with the reason:
+  - Tier 1 Security Analyst: alerts awaiting approval.
+  - Tier 2 Administrator: an open critical incident, or a ledger integrity failure.
+  - Tier 3 Telemetry Ingestion: hostile telemetry detected in the last 5 minutes, or malformed batches rejected.
+- **Live logs** (Telemetry Ingestion → Live logs): a SIEM-style viewer of every user action (clicks, navigation, filters, approvals, launches, settings changes; key values are never logged), API calls, pipeline scans, agent steps and ledger writes. It filters by source, level and text, can pause, and exports a `.log` file. The last 800 lines survive reloads.
 
 ## Real vs Simulated
 
@@ -98,7 +107,8 @@ Before anything is sent to Gemini, IPs, usernames, hostnames and the organisatio
 - **Correlated telemetry / intel** for an alert = the triggering events plus events within 10 minutes on the same host or user (same IP for brute-force rules). Events that arrive later for an open alert are attached too, so the ransomware DNS lookup to `ransomware-c2.net` lands on the shadow-copy alert.
 - **Cases** close automatically once every alert in them is approved or dismissed.
 - **Phishing simulation for orgs without a spoofed domain** (Contour and any org you add) reuses `shu-admissions-phish.com`, since the indicator list has only two phishing domains.
-- **Engine is always on**: like a real SOC platform, the pipeline and agent run continuously; there is no on/off switch.
+- **Engine is always on**: like a real SOC platform, the pipeline and agent run continuously while the site is open. A static site cannot run when no browser has it open; a production deployment would run the pipeline on a server.
+- **Baseline telemetry** is generated (documentation and private IP ranges) to show continuous monitoring; it is designed not to match any rule.
 - **Organizations** are stored with the platform data. Offboarding keeps history but rejects new telemetry for that org.
 - **Audit log tampering** is one of the simulator's attacks (an insider editing a stored record); admins detect and rebuild it from the Audit ledger page.
 - **Processing time** shown in the UI and `stats` is the measured detection pipeline per batch (normalize → detect → intel → case → audit), not including AI triage. AI latency is shown separately on each triage card.

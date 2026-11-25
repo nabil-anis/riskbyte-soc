@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
-import { useStore, VIEWS, WORKSPACE_LABEL, WORKSPACE_ROLE, effectiveKey, syncFromHash, type Workspace } from './store/store';
+import { useStore, VIEWS, WORKSPACE_LABEL, WORKSPACE_ROLE, syncFromHash, tierStatus, type Workspace } from './store/store';
+import { MonitorPill, AiPill } from './components/Live';
 import { TOKENS } from './engine/auth';
 import { Toasts } from './components/ui';
 import Landing from './pages/Landing';
@@ -24,6 +25,7 @@ const SUBTITLE: Record<string, string> = {
   'admin/ledger': 'SHA-256 hash-chained record of every action',
   'admin/system': 'License, storage, API and data management',
   'ingest/overview': 'Collectors, endpoints and throughput per organization',
+  'ingest/logs': 'Every user action, API call, scan, agent step and ledger write, in real time',
   'ingest/stream': 'Raw normalized events as they arrive',
   'ingest/send': 'Post a batch to the ingest API',
   'ingest/console': 'Live pipeline log',
@@ -62,14 +64,14 @@ function Sidebar({ ws }: { ws: Workspace }) {
   );
 }
 
-function StatusRow() {
+function StatusRow({ ws }: { ws: Workspace }) {
   const audit = useStore((s) => s.audit);
-  const settings = useStore((s) => s.settings);
-  const gemini = !!effectiveKey(settings);
+  const tier = useStore((s) => (ws === 'demo' ? null : tierStatus(s)[ws]));
   return (
     <div className="status-row">
-      <span className="stat-pill live"><span className="d" />Agent online</span>
-      <span className={`stat-pill ${gemini ? '' : 'warn'}`}><span className="d" />AI: {gemini ? `Gemini · ${settings.model}` : 'Heuristic'}</span>
+      {tier && <span className={`stat-pill ${tier.active ? 'bad' : ''}`} title={tier.reason}><span className="d" />{tier.active ? 'Tier active' : 'Standby'} · {tier.reason}</span>}
+      <MonitorPill />
+      <AiPill />
       <span className={`stat-pill ${audit.intact ? '' : 'bad'}`}><span className="d" />Ledger {audit.intact ? 'intact' : 'TAMPERED'}</span>
     </div>
   );
@@ -96,6 +98,28 @@ export default function App() {
   const ws = useStore((s) => s.workspace);
   const view = useStore((s) => s.view);
 
+  // Record every click and selection the user makes, like a real SOC's user-activity audit trail.
+  useEffect(() => {
+    const where = () => { const s = useStore.getState(); return s.workspace ? `${s.workspace}/${s.view}` : 'home'; };
+    const label = (el: Element) => (el.getAttribute('aria-label') || el.querySelector('h3, h4, b, .t')?.textContent || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    const onClick = (e: MouseEvent) => {
+      const el = (e.target as Element | null)?.closest('button, a, [role="tab"], [role="option"], [role="radio"], [role="switch"], tr.clickable');
+      if (!el) return;
+      const text = label(el);
+      if (!text) return;
+      const disabled = el.getAttribute('aria-disabled') === 'true';
+      useStore.getState().track(disabled ? 'clicked (blocked)' : 'clicked', `"${text}" on ${where()}`);
+    };
+    const onChange = (e: Event) => {
+      const t = e.target as HTMLInputElement | HTMLSelectElement;
+      if (t.tagName === 'SELECT') useStore.getState().track('changed', `${t.getAttribute('aria-label') || t.name || 'select'} = ${(t as HTMLSelectElement).value} on ${where()}`);
+      else if (t.type === 'checkbox' || t.type === 'range') useStore.getState().track('changed', `${t.getAttribute('aria-label') || t.type} = ${t.type === 'checkbox' ? (t as HTMLInputElement).checked : t.value} on ${where()}`);
+    };
+    document.addEventListener('click', onClick, true);
+    document.addEventListener('change', onChange, true);
+    return () => { document.removeEventListener('click', onClick, true); document.removeEventListener('change', onChange, true); };
+  }, []);
+
   useEffect(() => {
     const onHash = () => syncFromHash();
     window.addEventListener('hashchange', onHash);
@@ -121,7 +145,7 @@ export default function App() {
               <h1>{title}</h1>
               <p className="small muted" style={{ marginTop: 4 }}>{SUBTITLE[`${ws}/${view}`]}</p>
             </div>
-            <StatusRow />
+            <StatusRow ws={ws} />
           </div>
         </header>
         <IntegrityBanner ws={ws} />

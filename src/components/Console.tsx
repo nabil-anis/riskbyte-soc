@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
-import { useStore, effectiveKey } from '../store/store';
+import { useStore, aiMode } from '../store/store';
 import { RULES } from '../data/rules';
 import { copy } from './ui';
 
@@ -39,8 +39,9 @@ export function Console() {
       case 'help': out(HELP); break;
       case 'status':
         out([
-          'agent         online (in-browser)',
-          `provider      ${effectiveKey(st.settings) ? `gemini (${st.settings.model})` : 'heuristic (no API key set)'}`,
+          'agent         online · continuous monitoring',
+          `provider      ${aiMode(st) === 'server' ? `gemini (${st.settings.model}) via server key` : aiMode(st) === 'browser' ? `gemini (${st.settings.model}) via browser key` : 'heuristic (no Gemini key found)'}`,
+          `monitoring    24/7 · ${st.monitor.scans} baseline scans this session`,
           `policy        ${Object.entries(st.settings.policy.modes).map(([a, m]) => `${a}=${m}`).join(' ')}`,
           `orgs          ${d.orgs.length}`,
           `events        ${d.events.length} stored / ${d.counters.totalIngested} ingested`,

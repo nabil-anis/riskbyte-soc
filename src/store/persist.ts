@@ -7,6 +7,7 @@ export const KEYS = {
   state: 'riskbyte.state.v2',
   settings: 'riskbyte.settings.v1',
   session: 'riskbyte.session.v1',
+  logs: 'riskbyte.logs.v1',
 };
 
 export interface Settings {
@@ -56,6 +57,10 @@ export function loadData(): { data?: EngineData; migrated: boolean } {
     return { migrated: true };
   }
   return { data: d, migrated: false };
+}
+
+export function loadLogs<T>(): T[] {
+  return read<T[]>(KEYS.logs) ?? [];
 }
 
 export function storageBytes(): number {

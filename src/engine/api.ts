@@ -79,6 +79,8 @@ export interface RequestOptions {
   origin?: 'demo' | 'playground' | 'dispatcher' | 'ingest-api';
   scenarioId?: string;
   silent?: boolean;
+  quiet?: boolean;
+  auditMode?: 'always' | 'onAlert';
 }
 
 /** Mock REST API that runs in the browser. Every call returns {status, body} and is logged. */
@@ -88,6 +90,7 @@ export async function request(ctx: ApiContext, method: Method, path: string, opt
   // Ingest logs its 200 as soon as events are accepted (before AI triage finishes).
   const onStaged = (o: { accepted: number }) => {
     logged = true;
+    if (opts.silent) return;
     ctx.log('INFO', `${method} ${normalizePath(path)} 200 accepted=${o.accepted} role=${role}`);
   };
   const res = await handle(ctx, method, path, { ...opts, onStaged } as RequestOptions & { onStaged: typeof onStaged });
@@ -148,7 +151,7 @@ async function handle(ctx: ApiContext, method: Method, path: string, opts: Reque
       if (!Array.isArray(events)) return { status: 400, body: { error: 'bad request', problems: ['Body must be {"events": [ ... ]} or an array of events'] } };
       if (events.length > MAX_BATCH) return { status: 413, body: { error: 'payload too large', detail: `Batch has ${events.length} events; the limit is ${MAX_BATCH} per request. Split it into smaller batches.` } };
       try {
-        const out = await engine.ingest(events, { origin: opts.origin ?? 'ingest-api', scenarioId: opts.scenarioId, actor: actorFor(role), onStaged: opts.onStaged });
+        const out = await engine.ingest(events, { origin: opts.origin ?? 'ingest-api', scenarioId: opts.scenarioId, actor: actorFor(role), onStaged: opts.onStaged, quiet: opts.quiet, auditMode: opts.auditMode });
         return { status: 200, body: out };
       } catch (e) {
         const err = e as Error & { problems?: string[] };

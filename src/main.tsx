@@ -4,6 +4,7 @@ import './styles/tokens.css';
 import './styles/base.css';
 import './styles/components.css';
 import './styles/console.css';
+import './styles/live.css';
 import App from './App';
 import { bootstrap, syncFromHash } from './store/store';
 

@@ -140,11 +140,27 @@ export interface AuditStatus {
 }
 
 export type LogLevel = 'INFO' | 'WARN' | 'ALERT' | 'ERROR' | 'OK';
+export type LogSource = 'system' | 'pipeline' | 'agent' | 'api' | 'audit' | 'user' | 'simulator';
 export interface LogLine {
   id: number;
   ts: string;
+  /** full ISO timestamp (for export and ordering) */
+  at?: string;
   level: LogLevel;
   text: string;
+  src?: LogSource;
+}
+
+/** Infers the log source from the message text. */
+export function classifyLog(text: string): LogSource {
+  if (text.startsWith('user ')) return 'user';
+  if (text.startsWith('riskbyte ') || text.startsWith('riskbyte>')) return 'system';
+  if (/^(GET|POST|PUT|DELETE) \//.test(text)) return 'api';
+  if (/^(audit block|ledger|verify-audit|audit verification)/.test(text)) return 'audit';
+  if (/^(agent |gemini|dry-run)/.test(text)) return 'agent';
+  if (/^simulator/.test(text)) return 'simulator';
+  if (/^(scan |normalize|rule |intel |case |dedupe|correlated)/.test(text)) return 'pipeline';
+  return 'system';
 }
 
 export interface EngineData {

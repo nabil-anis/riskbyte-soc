@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useStore, effectiveKey } from '../store/store';
+import { useStore, aiMode } from '../store/store';
 import type { Action, Rule } from '../engine/types';
 import { RULES } from '../data/rules';
 import { INDICATORS } from '../data/indicators';
@@ -29,6 +29,7 @@ function Overview() {
   const data = useStore((s) => s.data);
   const audit = useStore((s) => s.audit);
   const settings = useStore((s) => s.settings);
+  const mode = useStore((s) => aiMode(s));
   const go = useStore((s) => s.go);
   const avg = data.counters.batches ? (data.counters.totalMs / data.counters.batches).toFixed(1) : '0.0';
   const autoActions = Object.values(settings.policy.modes).filter((m) => m === 'auto').length;
@@ -39,7 +40,7 @@ function Overview() {
         <div className="kpi"><span className="label">Telemetry ingested</span><span className="v">{data.counters.totalIngested}</span><span className="s">{data.counters.batches} batches</span></div>
         <div className="kpi"><span className="label">Open incidents</span><span className="v">{data.cases.filter((c) => c.status === 'open').length}</span><span className="s">{data.alerts.length} alerts total</span></div>
         <div className="kpi"><span className="label">Pipeline latency</span><span className="v">{avg}<span style={{ fontSize: '.5em' }}> ms</span></span><span className="s">avg per batch, excl. AI</span></div>
-        <div className="kpi"><span className="label">AI provider</span><span className="v sm">{effectiveKey(settings) ? 'Gemini' : 'Heuristic'}</span><span className="s">{effectiveKey(settings) ? settings.model : 'no API key configured'}</span></div>
+        <div className="kpi"><span className="label">AI provider</span><span className="v sm">{mode !== 'heuristic' ? 'Gemini' : 'Heuristic'}</span><span className="s">{mode === 'server' ? `${settings.model} · server key` : mode === 'browser' ? `${settings.model} · browser key` : 'no Gemini key found'}</span></div>
         <div className={`kpi ${audit.intact ? '' : 'hot'}`}><span className="label">Ledger integrity</span><span className={`v sm ${audit.intact ? 'ok' : 'coral'}`}>{audit.intact ? 'Intact ✓' : 'TAMPERED'}</span><span className="s">{audit.intact ? `${data.audit.length} blocks verified` : `broken at #${audit.brokenAt}`}</span></div>
       </section>
       <div className="cols-2e">
@@ -119,6 +120,8 @@ function Orgs() {
 
 function AgentSettings() {
   const settings = useStore((s) => s.settings);
+  const serverAi = useStore((s) => s.serverAi);
+  const mode = useStore((s) => aiMode(s));
   const update = useStore((s) => s.updateSettings);
   const setPolicy = useStore((s) => s.setPolicy);
   const toast = useStore((s) => s.toast);
@@ -136,7 +139,7 @@ function AgentSettings() {
   };
   const test = async () => {
     setTesting(true); setResult(null);
-    const r = await testConnection(key.trim() || ENV_KEY, model.trim() || 'gemini-2.5-flash');
+    const r = await testConnection(key.trim() || ENV_KEY, model.trim() || 'gemini-2.5-flash', !key.trim() && !ENV_KEY && serverAi === 'available');
     setTesting(false);
     setResult(r.ok ? { ok: true, text: `Connected · ${model} replied in ${r.ms} ms` } : { ok: false, text: `Failed after ${r.ms} ms: ${r.error}` });
   };
@@ -145,12 +148,20 @@ function AgentSettings() {
   return (
     <div className="cols-2e">
       <section className="panel">
-        <div className="panel-head"><h3>AI provider</h3><div className="right"><span className={`pill ${effectiveKey(settings) ? 'st-executed' : 'sev-MEDIUM'}`}>{effectiveKey(settings) ? 'Gemini' : 'Heuristic'}</span></div></div>
+        <div className="panel-head"><h3>AI provider</h3><div className="right"><span className={`pill ${mode !== 'heuristic' ? 'st-executed' : 'sev-MEDIUM'}`}>{mode === 'server' ? 'Gemini · server key' : mode === 'browser' ? 'Gemini · browser key' : 'Heuristic'}</span></div></div>
         <div className="panel-body stack">
+          <div className={`banner ${serverAi === 'available' ? '' : 'coral'}`} style={{ borderLeftColor: serverAi === 'available' ? 'var(--ok)' : undefined }}>
+            <div className="grow small">
+              <b>Server key (GEMINI_API_KEY): {serverAi === 'available' ? 'configured ✓' : serverAi === 'checking' ? 'checking…' : 'not found'}</b><br />
+              {serverAi === 'available'
+                ? 'The agent calls Gemini through the server-side /api/gemini function. The key stays on the server and is never sent to browsers.'
+                : 'Add GEMINI_API_KEY in Vercel → Project → Settings → Environment Variables, then redeploy. Locally, put it in .env.local.'}
+            </div>
+          </div>
           <label className="field">
-            <span>Google Gemini API key</span>
+            <span>Browser key override <span className="muted">(optional)</span></span>
             <div className="row" style={{ flexWrap: 'nowrap' }}>
-              <input className="input mono" type={show ? 'text' : 'password'} value={key} onChange={(e) => setKey(e.target.value)} placeholder="AIza…" autoComplete="off" spellCheck={false} />
+              <input className="input mono" type={show ? 'text' : 'password'} value={key} onChange={(e) => setKey(e.target.value)} placeholder={serverAi === 'available' ? 'Not needed: using the server key' : 'AIza…'} autoComplete="off" spellCheck={false} />
               <Button variant="secondary" size="sm" onClick={() => setShow(!show)}>{show ? 'Hide' : 'Show'}</Button>
             </div>
             <span className="help">{usingEnv ? 'Using key from build environment. ' : ''}Stored in this browser only; never logged or sent anywhere except Google’s API. Leave empty to use the local heuristic model.</span>
@@ -162,7 +173,7 @@ function AgentSettings() {
           </label>
           <div className="row">
             <Button onClick={save}>Save</Button>
-            <Button variant="secondary" onClick={test} busy={testing} disabledReason={!key.trim() && !ENV_KEY ? 'Paste a key first' : null}>Test connection</Button>
+            <Button variant="secondary" onClick={test} busy={testing} disabledReason={!key.trim() && !ENV_KEY && serverAi !== 'available' ? 'No server key found; paste a key first' : null}>Test connection</Button>
           </div>
           {result && <div role="status" className={`banner ${result.ok ? '' : 'bad'}`} style={{ borderLeftColor: result.ok ? 'var(--ok)' : undefined }}>{result.text}</div>}
           <p className="small muted">Before evidence leaves the browser, IPs, usernames, hostnames and the organization name are replaced with tokens like <code>[REDACTED_IP_1]</code> and mapped back locally. If Gemini fails or times out (12 s), the agent falls back to the heuristic model and says so on the alert.</p>

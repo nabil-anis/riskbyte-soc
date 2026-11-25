@@ -8,7 +8,9 @@ import { attachToCase, refreshCaseStatus } from './cases';
 import { triage, type TriageConfig } from './triage';
 import { proposeContainment } from './containment';
 import { clientName, DEFAULT_ORGS, setOrgs, slugify } from '../data/clients';
-import { ruleById } from '../data/rules';
+import { ruleById, RULES } from '../data/rules';
+
+const RULES_COUNT = RULES.length;
 
 export const MAX_STORED_EVENTS = 2000;
 export const AGENT_ACTOR = 'ai:riskbyte-agent';
@@ -33,6 +35,10 @@ export interface IngestOptions {
   actor: string;
   /** called once events are stored and detection has run, before AI triage */
   onStaged?: (outcome: IngestOutcome) => void;
+  /** log one summary line instead of one line per event (24/7 baseline monitoring) */
+  quiet?: boolean;
+  /** 'always' writes an ingest.accepted block per batch; 'onAlert' only when the batch raised alerts */
+  auditMode?: 'always' | 'onAlert';
 }
 
 export interface IngestOutcome {
@@ -111,8 +117,13 @@ export class Engine {
       const newEvents: RiskEvent[] = raw.map((r, i) => normalizeEvent(r as Record<string, unknown>, counters.event + i + 1, opts.origin));
       counters = { ...counters, event: counters.event + newEvents.length, totalIngested: counters.totalIngested + newEvents.length };
       let events = [...this.data.events, ...newEvents];
-      if (events.length > MAX_STORED_EVENTS) events = events.slice(events.length - MAX_STORED_EVENTS);
-      for (const e of newEvents) {
+      if (events.length > MAX_STORED_EVENTS) {
+        // Retention: drop the oldest events, but never evidence referenced by an alert.
+        const keep = new Set(this.data.alerts.flatMap((a) => a.eventIds));
+        let excess = events.length - MAX_STORED_EVENTS;
+        events = events.filter((e) => (excess > 0 && !keep.has(e.id) ? (excess--, false) : true));
+      }
+      if (!opts.quiet) for (const e of newEvents) {
         this.deps.log('INFO', `normalize event ${e.id} org=${e.client} source=${e.source} host=${e.host ?? '-'} user=${e.user ?? '-'}${e.ip ? ` ip=${e.ip}` : ''} action=${e.action}`);
       }
 
@@ -170,7 +181,11 @@ export class Engine {
       this.data = { ...this.data, events, alerts, cases, counters };
 
       const batchClient: ClientId = newEvents[0].client;
-      await this.append({ client: batchClient, actor: opts.actor, kind: 'ingest.accepted', detail: `${newEvents.length} event(s) accepted via ${opts.origin} (${newEvents[0].id}..${newEvents[newEvents.length - 1].id})` });
+      if (opts.quiet) {
+        const orgsInBatch = [...new Set(newEvents.map((e) => e.client))].join(',');
+        this.deps.log(created.length ? 'ALERT' : 'INFO', `scan ${newEvents[0].id}..${newEvents[newEvents.length - 1].id} · ${newEvents.length} events · orgs=${orgsInBatch} · ${RULES_COUNT} rules · ${created.length} detection${created.length === 1 ? '' : 's'} · ${processingMs}ms`);
+      }
+      if (opts.auditMode !== 'onAlert' || created.length) await this.append({ client: batchClient, actor: opts.actor, kind: 'ingest.accepted', detail: `${newEvents.length} event(s) accepted via ${opts.origin} (${newEvents[0].id}..${newEvents[newEvents.length - 1].id})` });
       for (const a of created) {
         await this.append({ client: a.client, actor: 'system:detector', kind: 'alert.created', alertId: a.id, detail: `${a.ruleId} ${a.title} severity=${a.severity} entity=${alertEntity(a)} case=${a.caseId}` });
       }
@@ -302,6 +317,15 @@ export class Engine {
       this.auditStatus = await verifyChain(this.data.audit);
       this.commit(this.data);
       return true;
+    });
+  }
+
+  /** Periodic monitoring checkpoint so the ledger proves the platform was watching. */
+  async checkpoint(detail: string) {
+    return this.exclusive(async () => {
+      await this.append({ client: 'system', actor: 'system:monitor', kind: 'monitoring.checkpoint', detail });
+      this.auditStatus = await verifyChain(this.data.audit);
+      this.commit(this.data);
     });
   }
 

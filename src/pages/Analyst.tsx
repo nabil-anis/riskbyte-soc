@@ -4,6 +4,7 @@ import type { Alert, ClientId, Severity } from '../engine/types';
 import { SEV_RANK } from '../engine/types';
 import { Button, ClientBadge, EmptyState, Modal, SeverityBadge, StatusBadge, VerdictPill, fmtDateTime, relTime, useTick } from '../components/ui';
 import { ActivityFeed, AlertDetail, useAgentFeed } from '../components/agent';
+import { LiveLog, useMonitorStats } from '../components/Live';
 import { clientName } from '../data/clients';
 
 const awaiting = (a: Alert) => a.status === 'new' || a.status === 'triaged';
@@ -60,9 +61,7 @@ function Overview() {
       <div className="cols-2">
         <section className="panel" aria-labelledby="q-h">
           <div className="panel-head"><h3 id="q-h">Approval queue</h3><div className="right"><Button variant="secondary" size="sm" onClick={() => go('alerts')}>Open alert queue</Button></div></div>
-          {queue.length === 0 ? (
-            <EmptyState icon="✓" title="Nothing waiting on you">When the agent recommends a containment action, it lands here for approval.</EmptyState>
-          ) : queue.slice(0, 8).map((a) => <QueueRow key={a.id} a={a} onOpen={() => open(a.id)} />)}
+          {queue.length === 0 ? <AllClear /> : queue.slice(0, 8).map((a) => <QueueRow key={a.id} a={a} onOpen={() => open(a.id)} />)}
         </section>
         <section className="panel" aria-labelledby="act-h">
           <div className="panel-head"><h3 id="act-h">Agent activity</h3><div className="right"><Button variant="secondary" size="sm" onClick={() => go('activity')}>View all</Button></div></div>
@@ -81,6 +80,17 @@ function Overview() {
         </section>
       </div>
     </>
+  );
+}
+
+function AllClear() {
+  const { perMin, lastScan } = useMonitorStats();
+  return (
+    <div className="allclear">
+      <h4><span className="pulse-dot" aria-hidden />All clear · standing by</h4>
+      <p className="muted small">The agent is scanning live telemetry ({perMin} events in the last minute{lastScan !== null ? `, last scan ${lastScan}s ago` : ''}). You will be called in here only when it recommends an action that needs a human.</p>
+      <LiveLog lines={12} height={200} title="Detection pipeline" />
+    </div>
   );
 }
 

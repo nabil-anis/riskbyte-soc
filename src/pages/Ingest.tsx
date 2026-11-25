@@ -5,12 +5,15 @@ import { MAX_BATCH, SOURCES } from '../engine/normalize';
 import { Button, ClientBadge, EmptyState, fmtTime, relTime, useTick } from '../components/ui';
 import { Console } from '../components/Console';
 import { Bars } from './Analyst';
+import { LiveLog } from '../components/Live';
+import { LogViewer } from '../components/LogViewer';
 
 export default function IngestWorkspace() {
   const view = useStore((s) => s.view);
   if (view === 'stream') return <Stream />;
   if (view === 'send') return <Send />;
   if (view === 'console') return <Console />;
+  if (view === 'logs') return <LogViewer />;
   return <Sources />;
 }
 
@@ -61,6 +64,7 @@ function Sources() {
           <div className="panel-body"><Bars rows={SOURCES.map((s) => ({ label: s, n: events.filter((e) => e.source === s).length }))} /></div>
         </section>
       </div>
+      <LiveLog lines={30} height={220} title="Detection pipeline · 24/7" />
       <section className="panel">
         <div className="panel-head"><h3>Collectors</h3><div className="right"><span className="pill chip">{rows.length} reporting</span></div></div>
         {rows.length === 0 && silent.length === orgs.length ? <EmptyState icon="⇪" title="No telemetry received yet">Collectors appear as soon as the first event from an organization arrives.</EmptyState> : (

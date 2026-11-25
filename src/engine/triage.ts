@@ -1,6 +1,6 @@
 import type { Alert, RiskEvent, Triage } from './types';
 import { heuristicTriage } from './heuristic';
-import { callGemini, parseGeminiResponse, SYSTEM_INSTRUCTION, GeminiError } from './gemini';
+import { callGemini, callGeminiServer, parseGeminiResponse, SYSTEM_INSTRUCTION, GeminiError } from './gemini';
 import { redact, unredact } from './redact';
 import { ruleById } from '../data/rules';
 import { clientName } from '../data/clients';
@@ -8,6 +8,8 @@ import { clientName } from '../data/clients';
 export interface TriageConfig {
   apiKey: string;
   model: string;
+  /** use the server-side proxy (GEMINI_API_KEY on the server) when no browser key is set */
+  server?: boolean;
 }
 
 /** Builds the evidence document sent to the model (before redaction). */
@@ -40,11 +42,13 @@ export function redactEvidence(alert: Alert, events: RiskEvent[]) {
 
 /** Gemini when a key is set; otherwise (or on any failure) the deterministic heuristic. Never throws. */
 export async function triage(alert: Alert, events: RiskEvent[], cfg: TriageConfig, repeatEntity = false): Promise<Triage> {
-  if (!cfg.apiKey) return heuristicTriage(alert, events, repeatEntity);
+  if (!cfg.apiKey && !cfg.server) return heuristicTriage(alert, events, repeatEntity);
   const t0 = performance.now();
   const r = redactEvidence(alert, events);
   try {
-    const json = await callGemini({ apiKey: cfg.apiKey, model: cfg.model, system: SYSTEM_INSTRUCTION, userText: r.text });
+    const json = cfg.apiKey
+      ? await callGemini({ apiKey: cfg.apiKey, model: cfg.model, system: SYSTEM_INSTRUCTION, userText: r.text })
+      : await callGeminiServer({ model: cfg.model, userText: r.text });
     const parsed = parseGeminiResponse(json);
     return {
       provider: 'gemini',

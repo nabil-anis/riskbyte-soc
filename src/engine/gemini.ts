@@ -39,6 +39,50 @@ export function parseGeminiResponse(json: unknown): GeminiResult {
   return { verdict, confidence: Math.max(0, Math.min(100, conf)), summary: obj.summary, steps };
 }
 
+/** Server-side proxy (/api/gemini) that holds GEMINI_API_KEY. The browser never sees the key. */
+export async function callGeminiServer(opts: { model: string; userText: string; json?: boolean; timeoutMs?: number }): Promise<unknown> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? TIMEOUT_MS);
+  try {
+    const res = await fetch('/api/gemini', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: opts.json === false ? 'ping' : 'triage', model: opts.model, userText: opts.userText }),
+      signal: controller.signal,
+    });
+    let j: any = null;
+    try { j = await res.json(); } catch { /* ignore */ }
+    if (!res.ok) {
+      const detail = j?.error?.message ?? j?.detail ?? j?.error ?? '';
+      const short = res.status === 501 ? 'server key not set' : res.status === 404 ? 'model not found (404)' : res.status === 400 || res.status === 403 ? `invalid key or request (${res.status})` : res.status === 429 ? 'rate limited (429)' : res.status === 504 ? 'timeout' : `HTTP ${res.status}`;
+      throw new GeminiError(short, `HTTP ${res.status}${detail ? `: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` : ''}`);
+    }
+    return j;
+  } catch (err) {
+    if (err instanceof GeminiError) throw err;
+    if ((err as Error)?.name === 'AbortError') throw new GeminiError('timeout', `No response within ${(opts.timeoutMs ?? TIMEOUT_MS) / 1000}s`);
+    throw new GeminiError('network error', (err as Error)?.message || 'Network error');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Asks the server whether GEMINI_API_KEY is configured. */
+export async function serverGeminiConfigured(timeoutMs = 4000): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch('/api/gemini', { signal: controller.signal, headers: { Accept: 'application/json' } });
+    if (!res.ok || !(res.headers.get('content-type') ?? '').includes('json')) return false;
+    const j = await res.json();
+    return j?.configured === true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function callGemini(opts: { apiKey: string; model: string; userText: string; system?: string; json?: boolean; timeoutMs?: number }): Promise<unknown> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? TIMEOUT_MS);
@@ -89,11 +133,13 @@ export async function callGemini(opts: { apiKey: string; model: string; userText
 }
 
 /** Tiny prompt used by Settings → Test Connection. */
-export async function testConnection(apiKey: string, model: string): Promise<{ ok: true; ms: number; reply: string } | { ok: false; ms: number; error: string }> {
+export async function testConnection(apiKey: string, model: string, server = false): Promise<{ ok: true; ms: number; reply: string } | { ok: false; ms: number; error: string }> {
   const t0 = performance.now();
-  if (!apiKey) return { ok: false, ms: 0, error: 'No API key entered' };
+  if (!apiKey && !server) return { ok: false, ms: 0, error: 'No API key entered' };
   try {
-    const json = (await callGemini({ apiKey, model, userText: 'Reply with the single word: ready', json: false })) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+    const json = (apiKey
+      ? await callGemini({ apiKey, model, userText: 'Reply with the single word: ready', json: false })
+      : await callGeminiServer({ model, userText: 'ping', json: false })) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
     const reply = json?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '(empty reply)';
     return { ok: true, ms: Math.round(performance.now() - t0), reply };
   } catch (e) {
